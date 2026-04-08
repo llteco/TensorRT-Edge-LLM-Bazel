@@ -1,4 +1,6 @@
 build/
+bazel-*
+bazel-*/
 dist/
 *.egg-info
 *_engine/
@@ -13,6 +15,8 @@ data.tar
 *.csv
 *.tar.gz
 internal/
+external
+external/
 *.log
 .DS_Store/
 docs/cpp_docs/

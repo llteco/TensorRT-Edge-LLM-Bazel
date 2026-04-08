@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "unittests_cpp_srcs",
+    srcs = glob(["**/*.cpp"]),
+)
+
+filegroup(
+    name = "unittests_cu_srcs",
+    srcs = glob(["**/*.cu"]),
+)
+
+_COMMON_INCLUDE_DIRS = [
+    ".",
+    "../cpp",
+    "../cpp/common",
+    "../examples/multimodal",
+    "../3rdParty/stb",
+]
+
+_CUDA_COMMON_COPTS = [
+    "--expt-relaxed-constexpr",
+    "-t 0",
+]
+
+_COMMON_COPTS = [
+    "-Wall",
+    "-Wextra",
+    "-Wno-unknown-pragmas",
+    "-Wno-deprecated",
+    "-fPIC",
+]
+
+_DL_LINKOPTS = ["-ldl"]
+
+cuda_library(
+    name = "edgellm_unittests_cuda",
+    srcs = [":unittests_cu_srcs"],
+    hdrs = glob(["**/*.h"]),
+    copts = _CUDA_COMMON_COPTS,
+    includes = _COMMON_INCLUDE_DIRS,
+    rdc = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//cpp:edgellm_core",
+        "@com_google_googletest//:gtest",
+        "@nlohmann_json//:json",
+        "@tensorrt",
+    ],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "edgellm_unittests_cpp",
+    srcs = [":unittests_cpp_srcs"],
+    hdrs = glob(["**/*.h"]),
+    copts = _COMMON_COPTS + ["-DPROJECT_ROOT_DIR=\\\".\\\""],
+    includes = _COMMON_INCLUDE_DIRS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//cpp:edgellm_core",
+        "@com_google_googletest//:gtest",
+        "@nlohmann_json//:json",
+        "@tensorrt",
+    ],
+    alwayslink = True,
+)
+
+cc_test(
+    name = "unitTest",
+    size = "medium",
+    copts = _COMMON_COPTS,
+    data = glob(["resources/**"]),
+    includes = _COMMON_INCLUDE_DIRS,
+    linkopts = _DL_LINKOPTS + ["-Wl,--allow-shlib-undefined"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":edgellm_unittests_cpp",
+        ":edgellm_unittests_cuda",
+        "//cpp:edgellm_tokenizer",
+        "@com_google_googletest//:gtest_main",
+        "@cuda",
+        "@tensorrt",
+    ],
+)

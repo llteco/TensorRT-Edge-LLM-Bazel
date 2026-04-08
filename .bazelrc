@@ -1,0 +1,28 @@
+startup --windows_enable_symlinks
+common --noenable_bzlmod
+
+# fetch remote JDK for gtest
+# build --java_runtime_version=remotejdk_11
+# no coverage support needed hence no jdk needed
+# Work around the sandbox issue.
+build --spawn_strategy=local
+
+build -c opt
+build --enable_platform_specific_config
+
+# Work around potential issues with large command lines on windows.
+# See: https://github.com/bazelbuild/bazel/issues/5163
+build:windows --features=compiler_param_file --enable_runfiles
+# build:windows --features=static_link_msvcrt
+build:windows --cpu=x64_windows
+build:windows --cxxopt="/std:c++17" --host_cxxopt="/std:c++17"
+
+build:linux --compiler=clang --features=compiler_param_file
+build:linux --repo_env=CC=clang --repo_env=CXX=clang++
+build:linux --cxxopt "-std=c++17" --host_cxxopt "-std=c++17"
+build:linux --@rules_cuda//cuda:archs=sm_80
+
+build --@rules_cuda//cuda:copts="-allow-unsupported-compiler"
+
+# print error test logs
+test --test_output=errors
