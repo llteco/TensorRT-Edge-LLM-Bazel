@@ -150,10 +150,11 @@ _FMHA_EXCLUDE_DEFINES = select({
     ],
 })
 
-filegroup(
-    name = "tensorrt_edge_llm",
-    srcs = [
-        "//cpp:tensorrt_edge_llm",
+cc_library(
+    name = "stb_image",
+    hdrs = [
+        "3rdParty/stb/stb_image.h",
+        "3rdParty/stb/stb_image_resize2.h",
     ],
     visibility = ["//visibility:public"],
 )

@@ -59,16 +59,3 @@ local_repository(
     name = "com_google_googletest",
     path = "3rdParty/googletest",
 )
-
-new_local_repository(
-    name = "stb",
-    build_file_content = """
-cc_library(
-    name = "stb",
-    hdrs = ["stb_image_resize2.h", "stb_image.h"],
-    includes = ["."],
-    visibility = ["//visibility:public"],
-)
-""",
-    path = "3rdParty/stb",
-)
