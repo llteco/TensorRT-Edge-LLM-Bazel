@@ -259,8 +259,8 @@ cc_library(
     includes = _COMMON_INCLUDE_DIRS,
     linkopts = _DL_LINKOPTS,
     deps = [
+        "//:stb_image",
         "@nlohmann_json//:json",
-        "@stb",
         "@tensorrt",
     ],
 )
