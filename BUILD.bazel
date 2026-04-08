@@ -1,0 +1,159 @@
+# ============================================================================
+# TensorRT Edge LLM Bazel Build Rules
+# ============================================================================
+#
+# Usage:
+#   # Build with rules_cuda default archs
+#   bazel build //cpp:edgellm_core
+#
+#   # Build for specific SM version
+#   bazel build //cpp:edgellm_core --@rules_cuda//cuda:archs=compute_80:compute_80,sm_80
+#
+#   # Build for multiple architectures
+#   bazel build //cpp:edgellm_core --@rules_cuda//cuda:archs=compute_80:compute_80,sm_80;compute_89:compute_89,sm_89
+#
+# Supported SM versions: 80, 86, 87, 89, 100, 101, 120, 121
+# FMHA exclusions are selected from exact single-arch strings above; other
+# arch strings fall back to no FMHA exclusion (compile all FMHA cubins).
+#
+# ============================================================================
+
+package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "cuda_arch_sm61",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_61,sm_61"},
+)
+
+config_setting(
+    name = "cuda_arch_sm80",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_80,sm_80"},
+)
+
+config_setting(
+    name = "cuda_arch_sm86",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_86,sm_86"},
+)
+
+config_setting(
+    name = "cuda_arch_sm87",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_87,sm_87"},
+)
+
+config_setting(
+    name = "cuda_arch_sm89",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_89,sm_89"},
+)
+
+config_setting(
+    name = "cuda_arch_sm100",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_100,sm_100"},
+)
+
+config_setting(
+    name = "cuda_arch_sm101",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_101,sm_101"},
+)
+
+config_setting(
+    name = "cuda_arch_sm120",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_120,sm_120"},
+)
+
+config_setting(
+    name = "cuda_arch_sm121",
+    flag_values = {"@rules_cuda//cuda:archs": "compute_121,sm_121"},
+)
+
+_FMHA_EXCLUDE_DEFINES = select({
+    ":cuda_arch_sm80": [
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm86": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm87": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm89": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm100": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm101": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm120": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_121",
+    ],
+    ":cuda_arch_sm121": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_89",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+    ],
+    # Unknown/combined arch string: use a conservative default (sm89 class).
+    "//conditions:default": [
+        "EXCLUDE_SM_80",
+        "EXCLUDE_SM_86",
+        "EXCLUDE_SM_87",
+        "EXCLUDE_SM_100",
+        "EXCLUDE_SM_101",
+        "EXCLUDE_SM_120",
+        "EXCLUDE_SM_121",
+    ],
+})
+
+filegroup(
+    name = "tensorrt_edge_llm",
+    srcs = [
+        "//cpp:tensorrt_edge_llm",
+    ],
+    visibility = ["//visibility:public"],
+)
