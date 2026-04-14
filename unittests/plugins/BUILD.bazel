@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+_COMMON_COPTS = [
+    "-Wall",
+    "-Wextra",
+    "-Wno-unknown-pragmas",
+    "-Wno-deprecated",
+    "-fPIC",
+]
+
+_DL_LINKOPTS = ["-ldl"]
+
+cc_test(
+    name = "pluginTests",
+    size = "medium",
+    srcs = [
+        "gatedDeltaRulePluginTests.cpp",
+        "gdnCausalConv1dPluginTests.cpp",
+    ],
+    copts = _COMMON_COPTS,
+    data = ["//unittests:unittests_resources"],
+    includes = [".."],
+    linkopts = _DL_LINKOPTS + ["-Wl,--allow-shlib-undefined"],
+    deps = [
+        "//cpp:edgellm_plugins_static",
+        "@com_google_googletest//:gtest_main",
+        "@cuda",
+        "@tensorrt",
+    ],
+)

@@ -54,7 +54,10 @@ cc_binary(
     deps = [
         "//cpp:edgellm_builder",
         "@tensorrt",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(
@@ -94,7 +97,10 @@ cc_binary(
     deps = [
         "//cpp:edgellm_builder",
         "@tensorrt",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(

@@ -111,7 +111,14 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
         auto visionConfig = jsonConfig["vision_config"];
         auto numPositionEmbeddings = visionConfig["num_position_embeddings"].get<int64_t>();
         mConfig.numGridPerSide = static_cast<int64_t>(std::sqrt(numPositionEmbeddings));
-        mConfig.numDeepstackFeatures = visionConfig["deepstack_visual_indexes"].get<std::vector<int64_t>>().size();
+        if (visionConfig.contains("deepstack_visual_indexes"))
+        {
+            mConfig.numDeepstackFeatures = visionConfig["deepstack_visual_indexes"].get<std::vector<int64_t>>().size();
+        }
+        else
+        {
+            mConfig.numDeepstackFeatures = 0;
+        }
     }
 
     auto builderConfig = jsonConfig["builder_config"];

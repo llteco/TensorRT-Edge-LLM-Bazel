@@ -18,6 +18,9 @@
 #
 # ============================================================================
 
+load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = ["//visibility:public"])
 
 config_setting(
@@ -156,5 +159,19 @@ cc_library(
         "3rdParty/stb/stb_image.h",
         "3rdParty/stb/stb_image_resize2.h",
     ],
+    includes = ["3rdParty/stb"],
     visibility = ["//visibility:public"],
+)
+
+refresh_compile_commands(
+    name = "r",
+    # Specify the targets of interest.
+    # No need to add flags already in .bazelrc. They're automatically picked up.
+    # If you don't need flags, a list of targets is also okay, as is a single target string.
+    # Wildcard patterns, like //... for everything, *are* allowed here, just like a build.
+    targets = {
+        "//cpp/...": "",
+        "//examples/...": "",
+        "//unittests/...": "",
+    },
 )

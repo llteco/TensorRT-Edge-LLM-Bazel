@@ -1,6 +1,10 @@
 build/
-bazel-*
-bazel-*/
+# Ignore Bazel output symlinks at repository root.
+/bazel-*
+/bazel-*/
+# Do not ignore bazel-* directories under .github.
+!.github/**/bazel-*/
+!.github/**/bazel-*/**
 dist/
 *.egg-info
 *_engine/
@@ -24,3 +28,5 @@ docs/build/
 docs/source/cpp_api/
 docs/source/cpp_api.rst
 docs/source/python_api.rst
+uv.lock
+.claude/settings.json
