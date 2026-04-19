@@ -30,6 +30,32 @@ __device__ half silu_h(half x)
 }
 
 // ---------------------------------------------------------------------------
+// Float-to-Half cast helper (internal kernel)
+// ---------------------------------------------------------------------------
+
+__global__ void castFloatToHalfKernel(float const* in, half* out, int32_t n)
+{
+    int32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        out[idx] = __float2half(in[idx]);
+    }
+}
+
+} // anonymous namespace
+
+void castFloatToHalf(void const* in, void* out, int32_t numel, cudaStream_t stream)
+{
+    int32_t blockSize = 256;
+    int32_t gridSize = (numel + blockSize - 1) / blockSize;
+    castFloatToHalfKernel<<<gridSize, blockSize, 0, stream>>>(
+        static_cast<float const*>(in), static_cast<half*>(out), numel);
+}
+
+namespace
+{
+
+// ---------------------------------------------------------------------------
 // L2 Norm
 // ---------------------------------------------------------------------------
 
@@ -41,7 +67,7 @@ __global__ void l2NormKernel(
     int32_t numHeads,
     int32_t headDim)
 {
-    __shared__ float sharedSumSquares[32];
+    __shared__ float sharedNorm;
 
     int32_t bs = blockIdx.x / numHeads;
     int32_t h = blockIdx.x % numHeads;
@@ -64,29 +90,13 @@ __global__ void l2NormKernel(
         sumSquares += __shfl_xor_sync(0xffffffff, sumSquares, mask);
     }
 
-    if (tid % 32 == 0)
-    {
-        sharedSumSquares[tid / 32] = sumSquares;
-    }
-    __syncthreads();
-
-    if (tid < 32)
-    {
-        sumSquares = sharedSumSquares[tid];
-        for (int32_t mask = 32 / 2; mask > 0; mask /= 2)
-        {
-            sumSquares += __shfl_xor_sync(0xffffffff, sumSquares, mask);
-        }
-    }
-    __syncthreads();
-
     if (tid == 0)
     {
-        sharedSumSquares[0] = sqrtf(sumSquares + EPS);
+        sharedNorm = sqrtf(sumSquares + EPS);
     }
     __syncthreads();
 
-    float normFactor = sharedSumSquares[0];
+    float normFactor = sharedNorm;
     for (int32_t i = tid; i < headDim; i += BLOCK_SIZE)
     {
         output[offset + i] = static_cast<T>(static_cast<float>(input[offset + i]) / normFactor);
@@ -287,7 +297,7 @@ __global__ void causalConv1dPrefillKernel(
 
     for (int32_t s = 0; s < seqLen; ++s)
     {
-        float acc = __half2float(bias[d]);
+        float acc = (bias != nullptr) ? __half2float(bias[d]) : 0.0f;
         for (int32_t k = 0; k < kernelSize; ++k)
         {
             int32_t inputPos = s - kernelSize + 1 + k;
@@ -353,7 +363,7 @@ __global__ void causalConv1dDecodeKernel(
     convStateOut[stateBase + kernelSize - 1] = x[b * convDim + d];
 
     // Compute output using the updated state
-    float acc = __half2float(bias[d]);
+    float acc = (bias != nullptr) ? __half2float(bias[d]) : 0.0f;
     for (int32_t k = 0; k < kernelSize; ++k)
     {
         acc += __half2float(convStateOut[stateBase + k]) * __half2float(weight[d * kernelSize + k]);

@@ -2,6 +2,12 @@ build/
 # Ignore Bazel output symlinks at repository root.
 /bazel-*
 /bazel-*/
+[.]*
+!.bazelrc
+!.bazelversion
+!.bazelignore
+!.gitmodules
+!.pre-commit-config.yaml
 # Do not ignore bazel-* directories under .github.
 !.github/**/bazel-*/
 !.github/**/bazel-*/**
@@ -30,3 +36,4 @@ docs/source/cpp_api.rst
 docs/source/python_api.rst
 uv.lock
 .claude/settings.json
+.env

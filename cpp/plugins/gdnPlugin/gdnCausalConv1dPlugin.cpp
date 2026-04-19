@@ -23,10 +23,11 @@ namespace
 constexpr char const* kGDN_CAUSAL_CONV_PLUGIN_NAME{"GatedDeltaNetCausalConv1d"};
 constexpr char const* kGDN_CAUSAL_CONV_PLUGIN_VERSION{"1"};
 
+// ONNX input order: [x, weight, bias, conv_state]
 constexpr int32_t kIN_X_IDX{0};
-constexpr int32_t kIN_CONV_STATE_IDX{1};
-constexpr int32_t kIN_WEIGHT_IDX{2};
-constexpr int32_t kIN_BIAS_IDX{3};
+constexpr int32_t kIN_WEIGHT_IDX{1};
+constexpr int32_t kIN_BIAS_IDX{2};
+constexpr int32_t kIN_CONV_STATE_IDX{3};
 constexpr int32_t kNUM_INPUTS{4};
 
 constexpr int32_t kOUT_IDX{0};
@@ -35,6 +36,39 @@ constexpr int32_t kNUM_OUTPUTS{2};
 
 constexpr char const* FIELD_KERNEL_SIZE{"kernel_size"};
 constexpr char const* FIELD_ACTIVATION{"activation"};
+
+// Helper: ensure a pointer is half*; if input is FLOAT, allocate a temp buffer and convert.
+struct HalfBuffer
+{
+    half* data = nullptr;
+    bool owned = false;
+
+    void acquire(void const* ptr, nvinfer1::DataType type, int32_t numel, cudaStream_t stream)
+    {
+        if (type == nvinfer1::DataType::kHALF)
+        {
+            data = const_cast<half*>(static_cast<half const*>(ptr));
+            owned = false;
+        }
+        else if (type == nvinfer1::DataType::kFLOAT)
+        {
+            cudaMallocAsync(&data, numel * sizeof(half), stream);
+            trt_edgellm::kernels::castFloatToHalf(ptr, data, numel, stream);
+            owned = true;
+        }
+    }
+
+    void release(cudaStream_t stream)
+    {
+        if (owned && data != nullptr)
+        {
+            cudaFreeAsync(data, stream);
+            data = nullptr;
+            owned = false;
+        }
+    }
+};
+
 } // namespace
 
 GatedDeltaNetCausalConv1dPlugin::GatedDeltaNetCausalConv1dPlugin(
@@ -91,11 +125,12 @@ int32_t GatedDeltaNetCausalConv1dPlugin::getNbOutputs() const noexcept
 int32_t GatedDeltaNetCausalConv1dPlugin::getOutputDataTypes(nvinfer1::DataType* outputTypes, int32_t nbOutputs,
     nvinfer1::DataType const* inputTypes, int32_t nbInputs) const noexcept
 {
-    outputTypes[kOUT_IDX] = inputTypes[kIN_X_IDX];
-    if (nbInputs > kIN_CONV_STATE_IDX)
+    if (nbOutputs != kNUM_OUTPUTS || nbInputs != kNUM_INPUTS)
     {
-        outputTypes[kOUT_CONV_STATE_IDX] = inputTypes[kIN_CONV_STATE_IDX];
+        return -1;
     }
+    outputTypes[kOUT_IDX] = inputTypes[kIN_X_IDX];
+    outputTypes[kOUT_CONV_STATE_IDX] = inputTypes[kIN_CONV_STATE_IDX];
     return 0;
 }
 
@@ -130,16 +165,39 @@ bool GatedDeltaNetCausalConv1dPlugin::supportsFormatCombination(
         return false;
     }
     bool const isLinear = inOut[pos].desc.format == nvinfer1::TensorFormat::kLINEAR;
-    bool const isHalf = inOut[pos].desc.type == nvinfer1::DataType::kHALF;
-    if (!isLinear || !isHalf)
+    if (!isLinear)
     {
         return false;
     }
-    if (pos > 0)
+
+    // x must be HALF
+    if (pos == kIN_X_IDX)
+    {
+        return inOut[pos].desc.type == nvinfer1::DataType::kHALF;
+    }
+    // weight and bias may be HALF or FLOAT
+    if (pos == kIN_WEIGHT_IDX || pos == kIN_BIAS_IDX)
+    {
+        return inOut[pos].desc.type == nvinfer1::DataType::kHALF
+            || inOut[pos].desc.type == nvinfer1::DataType::kFLOAT;
+    }
+    // conv_state must be HALF and same type as x
+    if (pos == kIN_CONV_STATE_IDX)
+    {
+        return inOut[pos].desc.type == nvinfer1::DataType::kHALF
+            && inOut[pos].desc.type == inOut[kIN_X_IDX].desc.type;
+    }
+    // outputs must match corresponding inputs
+    int32_t const outPos = pos - kNUM_INPUTS;
+    if (outPos == kOUT_IDX)
     {
         return inOut[pos].desc.type == inOut[kIN_X_IDX].desc.type;
     }
-    return true;
+    if (outPos == kOUT_CONV_STATE_IDX)
+    {
+        return inOut[pos].desc.type == inOut[kIN_CONV_STATE_IDX].desc.type;
+    }
+    return false;
 }
 
 int32_t GatedDeltaNetCausalConv1dPlugin::configurePlugin(nvinfer1::DynamicPluginTensorDesc const* in, int32_t nbInputs,
@@ -178,22 +236,46 @@ int32_t GatedDeltaNetCausalConv1dPlugin::enqueue(nvinfer1::PluginTensorDesc cons
     {
         convState = static_cast<half const*>(inputs[kIN_CONV_STATE_IDX]);
     }
-    half const* weight = static_cast<half const*>(inputs[kIN_WEIGHT_IDX]);
-    half const* bias = static_cast<half const*>(inputs[kIN_BIAS_IDX]);
+
+    // weight and bias may be FLOAT; convert on-the-fly if needed.
+    HalfBuffer weightBuf;
+    HalfBuffer biasBuf;
+
+    int32_t const weightNumel = convDim * mKernelSize;
+    weightBuf.acquire(inputs[kIN_WEIGHT_IDX], inputDesc[kIN_WEIGHT_IDX].type, weightNumel, stream);
+    if (weightBuf.data == nullptr)
+    {
+        return -1;
+    }
+
+    int32_t const biasNumel = convDim;
+    biasBuf.acquire(inputs[kIN_BIAS_IDX], inputDesc[kIN_BIAS_IDX].type, biasNumel, stream);
+    if (biasBuf.data == nullptr)
+    {
+        weightBuf.release(stream);
+        return -1;
+    }
+
     half* output = static_cast<half*>(outputs[kOUT_IDX]);
     half* convStateOut = static_cast<half*>(outputs[kOUT_CONV_STATE_IDX]);
 
+    int32_t status = 0;
     if (seqLen == 1)
     {
         trt_edgellm::kernels::causalConv1dDecode(
-            x, convState, weight, bias, output, convStateOut, batch, convDim, mKernelSize, mActivation, stream);
+            x, convState, weightBuf.data, biasBuf.data, output, convStateOut, batch, convDim, mKernelSize, mActivation,
+            stream);
     }
     else
     {
         trt_edgellm::kernels::causalConv1dPrefill(
-            x, weight, bias, output, convStateOut, batch, convDim, seqLen, mKernelSize, mActivation, stream);
+            x, weightBuf.data, biasBuf.data, output, convStateOut, batch, convDim, seqLen, mKernelSize, mActivation,
+            stream);
     }
-    return 0;
+
+    weightBuf.release(stream);
+    biasBuf.release(stream);
+    return status;
 }
 
 int32_t GatedDeltaNetCausalConv1dPlugin::onShapeChange(nvinfer1::PluginTensorDesc const* /*in*/, int32_t /*nbInputs*/,

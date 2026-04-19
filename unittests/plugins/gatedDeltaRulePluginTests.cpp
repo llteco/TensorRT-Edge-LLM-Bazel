@@ -65,6 +65,14 @@ std::string getResourcePath(std::string const& filename)
     return "unittests/resources/" + filename;
 }
 
+void initDynamicPluginTensorDesc(DynamicPluginTensorDesc& dynDesc, PluginTensorDesc const& desc)
+{
+    dynDesc.desc = desc;
+    dynDesc.min = desc.dims;
+    dynDesc.opt = desc.dims;
+    dynDesc.max = desc.dims;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -245,7 +253,7 @@ TEST(GatedDeltaRulePlugin, DecodeNumerical)
     DynamicPluginTensorDesc dynInDesc[6];
     for (int i = 0; i < 6; ++i)
     {
-        dynInDesc[i].desc = inputDesc[i];
+        initDynamicPluginTensorDesc(dynInDesc[i], inputDesc[i]);
     }
     size_t workspaceSize = plugin.getWorkspaceSize(dynInDesc, 6, nullptr, 2);
     void* workspace = nullptr;
@@ -373,7 +381,7 @@ TEST(GatedDeltaRulePlugin, DecodeAsymNumerical)
     DynamicPluginTensorDesc dynInDesc[6];
     for (int i = 0; i < 6; ++i)
     {
-        dynInDesc[i].desc = inputDesc[i];
+        initDynamicPluginTensorDesc(dynInDesc[i], inputDesc[i]);
     }
     size_t workspaceSize = plugin.getWorkspaceSize(dynInDesc, 6, nullptr, 2);
     void* workspace = nullptr;
@@ -499,7 +507,7 @@ TEST(GatedDeltaRulePlugin, PrefillNumerical)
     DynamicPluginTensorDesc dynInDesc[6];
     for (int i = 0; i < 6; ++i)
     {
-        dynInDesc[i].desc = inputDesc[i];
+        initDynamicPluginTensorDesc(dynInDesc[i], inputDesc[i]);
     }
     size_t workspaceSize = plugin.getWorkspaceSize(dynInDesc, 6, nullptr, 2);
     void* workspace = nullptr;
@@ -626,7 +634,7 @@ TEST(GatedDeltaRulePlugin, PrefillWithInitialState)
     DynamicPluginTensorDesc dynInDesc[6];
     for (int i = 0; i < 6; ++i)
     {
-        dynInDesc[i].desc = inputDesc[i];
+        initDynamicPluginTensorDesc(dynInDesc[i], inputDesc[i]);
     }
     size_t workspaceSize = plugin.getWorkspaceSize(dynInDesc, 6, nullptr, 2);
     void* workspace = nullptr;
@@ -752,7 +760,7 @@ TEST(GatedDeltaRulePlugin, Batch2PrefillNumerical)
     DynamicPluginTensorDesc dynInDesc[6];
     for (int i = 0; i < 6; ++i)
     {
-        dynInDesc[i].desc = inputDesc[i];
+        initDynamicPluginTensorDesc(dynInDesc[i], inputDesc[i]);
     }
     size_t workspaceSize = plugin.getWorkspaceSize(dynInDesc, 6, nullptr, 2);
     void* workspace = nullptr;

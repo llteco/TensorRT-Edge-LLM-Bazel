@@ -70,16 +70,26 @@ _CUDA_COMMON_COPTS = [
     "-t 0",
 ]
 
-_COMMON_COPTS = [
-    "-Wall",
-    "-Wextra",
-    "-Wno-deprecated",
-    "-Wno-unused-parameter",
-    "-Wno-unknown-pragmas",
-    "-fPIC",
-]
+_COMMON_COPTS = select({
+    "@platforms//os:windows": [
+        "/wd4100",
+        "/wd4244",
+        "/wd4505",
+    ],
+    "//conditions:default": [
+        "-Wall",
+        "-Wextra",
+        "-Wno-deprecated",
+        "-Wno-unused-parameter",
+        "-Wno-unknown-pragmas",
+        "-fPIC",
+    ],
+})
 
-_DL_LINKOPTS = ["-ldl"]
+_DL_LINKOPTS = select({
+    "@platforms//os:windows": [],
+    "//conditions:default": ["-ldl"],
+})
 
 _AARCH64_CROSS_LINKOPTS = select({
     "@platforms//cpu:aarch64": [

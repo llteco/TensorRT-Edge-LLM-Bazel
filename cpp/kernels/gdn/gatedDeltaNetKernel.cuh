@@ -128,6 +128,9 @@ void gatedDeltaNetSerialLoop(
     int32_t headKDim,
     cudaStream_t stream);
 
+//! Cast a float buffer to half in-place (device-side, allocates temp buffer internally)
+void castFloatToHalf(void const* in, void* out, int32_t numel, cudaStream_t stream);
+
 //! Causal conv1d prefill path
 void causalConv1dPrefill(
     void const* x,              // [batch, conv_dim, seq_len]

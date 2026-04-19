@@ -21,9 +21,9 @@ namespace plugins
 //!
 //! Inputs:
 //!   [0] x          [batch, conv_dim, seq_len]     FP16
-//!   [1] conv_state [batch, conv_dim, kernel_size] FP16 (optional)
-//!   [2] weight     [conv_dim, kernel_size]        FP16
-//!   [3] bias       [conv_dim]                     FP16
+//!   [1] weight     [conv_dim, kernel_size]        FP16
+//!   [2] bias       [conv_dim]                     FP16
+//!   [3] conv_state [batch, conv_dim, kernel_size] FP16 (optional)
 //!
 //! Outputs:
 //!   [0] output          [batch, conv_dim, seq_len]     FP16

@@ -31,7 +31,7 @@ from torch import nn
 
 from .. import model_utils
 from ..layers.gather_nd import custom_gather_nd
-from ..layers.layers import EdgeLLMDecoderLayer, EdgeLLMHybridBlock
+from ..layers.layers import EdgeLLMDecoderLayer, EdgeLLMHybridBlock, EdgeLLMQwen3_5Block
 from ..layers.reduced_lm_head import reduce_lm_head
 
 
@@ -297,6 +297,207 @@ class EdgeLLMHybridModelForCausalLM(nn.Module):
         self.embed_tokens = embed_layer.to(self.torch_dtype)
 
         self.model = EdgeLLMHybridModel(language_model)
+
+        if reduced_vocab_size is not None and vocab_map is not None:
+            print(
+                f"Reducing vocabulary size from {hf_model.lm_head.out_features}"
+                f" to {reduced_vocab_size}")
+            self.lm_head = reduce_lm_head(hf_model.lm_head, reduced_vocab_size,
+                                          vocab_map)
+        else:
+            self.lm_head = hf_model.lm_head
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Tuple[torch.Tensor, ...],
+        conv_states: Tuple[torch.Tensor, ...],
+        ssm_states: Tuple[torch.Tensor, ...],
+        rope_rotary_cos_sin: torch.Tensor,
+        context_lengths: torch.Tensor,
+        last_token_ids: torch.Tensor,
+        kvcache_start_index: torch.Tensor,
+        position_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...], Tuple[
+            torch.Tensor, ...], Tuple[torch.Tensor, ...]]:
+        """
+        Returns:
+            (logits, present_key_values, present_conv_states, present_ssm_states)
+        """
+        hidden_states, present_key_values, present_conv_states, present_ssm_states = self.model(
+            inputs_embeds=inputs_embeds,
+            past_key_values=past_key_values,
+            conv_states=conv_states,
+            ssm_states=ssm_states,
+            rope_rotary_cos_sin=rope_rotary_cos_sin,
+            context_lengths=context_lengths,
+            kvcache_start_index=kvcache_start_index,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+        )
+
+        last_hidden_state_gathered = custom_gather_nd(hidden_states,
+                                                      last_token_ids, 1)
+        logits = self.lm_head(last_hidden_state_gathered)
+        logits = logits.to(torch.float32)
+
+        return logits, tuple(present_key_values), tuple(
+            present_conv_states), tuple(present_ssm_states)
+
+
+class EdgeLLMQwen3_5Model(nn.Module):
+    """EdgeLLM model for Qwen3.5 hybrid (GatedDeltaNet + Attention) architectures.
+
+    Reads ``config.layer_types`` to wrap each layer appropriately and routes
+    state (KV cache for attention, conv/recurrent state for GatedDeltaNet)
+    through the correct layers.
+    """
+
+    def __init__(self, hf_model: nn.Module) -> None:
+        super().__init__()
+
+        self.config = hf_model.config
+        self.vocab_size = self.config.vocab_size
+        self.torch_dtype = hf_model.dtype
+        self.norm = hf_model.norm.to(self.torch_dtype)
+
+        self.layer_types: List[str] = list(self.config.layer_types)
+
+        self.layers = nn.ModuleList([
+            EdgeLLMQwen3_5Block(hf_layer, self.torch_dtype)
+            for hf_layer in hf_model.layers
+        ])
+
+        # Set max_position_embeddings on attention mixers
+        for layer in self.layers:
+            if layer.layer_type == "full_attention":
+                layer.mixer.max_position_embeddings = (
+                    self.config.max_position_embeddings)
+
+        # Pre-compute index maps for full_attention / linear_attention layers
+        self.full_attn_layer_indices: List[int] = [
+            i for i, lt in enumerate(self.layer_types) if lt == "full_attention"
+        ]
+        self.linear_attn_layer_indices: List[int] = [
+            i for i, lt in enumerate(self.layer_types) if lt == "linear_attention"
+        ]
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def num_full_attention_layers(self) -> int:
+        return len(self.full_attn_layer_indices)
+
+    @property
+    def num_linear_attention_layers(self) -> int:
+        return len(self.linear_attn_layer_indices)
+
+    # Aliases for compatibility with hybrid model export pipeline
+    @property
+    def num_attention_layers(self) -> int:
+        return self.num_full_attention_layers
+
+    @property
+    def num_mamba_layers(self) -> int:
+        return self.num_linear_attention_layers
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Tuple[torch.Tensor, ...],
+        conv_states: Tuple[torch.Tensor, ...],
+        ssm_states: Tuple[torch.Tensor, ...],
+        rope_rotary_cos_sin: torch.Tensor,
+        context_lengths: torch.Tensor,
+        kvcache_start_index: torch.Tensor,
+        position_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...], Tuple[
+            torch.Tensor, ...], Tuple[torch.Tensor, ...]]:
+        """
+        Returns:
+            (hidden_states, present_key_values, present_conv_states, present_ssm_states)
+        """
+        hidden_states = inputs_embeds
+        present_key_values: Tuple[torch.Tensor, ...] = ()
+        present_conv_states: Tuple[torch.Tensor, ...] = ()
+        present_ssm_states: Tuple[torch.Tensor, ...] = ()
+
+        full_idx = 0
+        linear_idx = 0
+
+        for idx, layer in enumerate(self.layers):
+            lt = self.layer_types[idx]
+
+            if lt == "linear_attention":
+                hidden_states, conv_state_out, ssm_state_out = layer.forward_linear_attention(
+                    hidden_states, conv_states[linear_idx],
+                    ssm_states[linear_idx])
+                present_conv_states += (conv_state_out, )
+                present_ssm_states += (ssm_state_out, )
+                linear_idx += 1
+
+            elif lt == "full_attention":
+                hidden_states, present_kv = layer.forward_full_attention(
+                    hidden_states,
+                    past_key_values[full_idx],
+                    rope_rotary_cos_sin,
+                    context_lengths,
+                    kvcache_start_index,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )
+                present_key_values += (present_kv, )
+                full_idx += 1
+
+        hidden_states = self.norm(hidden_states)
+        return hidden_states, present_key_values, present_conv_states, present_ssm_states
+
+
+class EdgeLLMQwen3_5ModelForCausalLM(nn.Module):
+    """Causal LM wrapper for Qwen3.5 (GatedDeltaNet + Attention) architectures."""
+
+    def __init__(
+        self,
+        hf_model: nn.Module,
+        reduced_vocab_size: Optional[int] = None,
+        vocab_map: Optional[torch.Tensor] = None,
+    ) -> None:
+        super().__init__()
+
+        language_model, config = model_utils.prepare_language_model_and_config(
+            hf_model)
+        self.torch_dtype = hf_model.dtype
+        self.config = config
+        embed_layer = getattr(language_model, 'embed_tokens',
+                              None) or language_model.embeddings
+        self.embed_tokens = embed_layer.to(self.torch_dtype)
+
+        self.model = EdgeLLMQwen3_5Model(language_model)
+
+        # Add hybrid-mamba compatible fields to config so that dummy input
+        # creation and the C++ builder can reuse the existing pipeline.
+        cfg = self.config
+        if hasattr(cfg, 'linear_num_value_heads'):
+            cfg.mamba_num_heads = cfg.linear_num_value_heads
+        if hasattr(cfg, 'linear_value_head_dim'):
+            cfg.mamba_head_dim = cfg.linear_value_head_dim
+        if hasattr(cfg, 'linear_key_head_dim'):
+            cfg.ssm_state_size = cfg.linear_key_head_dim
+        if hasattr(cfg, 'linear_conv_kernel_dim'):
+            cfg.conv_kernel = cfg.linear_conv_kernel_dim
+        if not hasattr(cfg, 'n_groups'):
+            cfg.n_groups = 1
+        if hasattr(cfg, 'linear_num_key_heads') and hasattr(cfg, 'linear_key_head_dim') and hasattr(cfg, 'linear_num_value_heads') and hasattr(cfg, 'linear_value_head_dim'):
+            cfg.conv_dim = (2 * cfg.linear_num_key_heads * cfg.linear_key_head_dim
+                            + cfg.linear_num_value_heads * cfg.linear_value_head_dim)
 
         if reduced_vocab_size is not None and vocab_map is not None:
             print(

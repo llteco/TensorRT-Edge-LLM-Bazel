@@ -814,6 +814,14 @@ int main(int argc, char* argv[])
         {
             nlohmann::json responseJson;
             std::string outputText = requestStatus ? response.outputTexts[batchIdx] : errorMessage;
+            // Debug: print outputIds info
+            if (requestStatus && batchIdx < response.outputIds.size())
+            {
+                LOG_INFO("DEBUG outputIds size=%zu, first=%d, last=%d",
+                    response.outputIds[batchIdx].size(),
+                    response.outputIds[batchIdx].empty() ? -1 : response.outputIds[batchIdx][0],
+                    response.outputIds[batchIdx].empty() ? -1 : response.outputIds[batchIdx].back());
+            }
             // Validate UTF-8 for output text (inputs are always valid)
             // If invalid UTF-8 detected, error message is returned and original text is logged
             responseJson["output_text"] = sanitizeUtf8ForJson(outputText);

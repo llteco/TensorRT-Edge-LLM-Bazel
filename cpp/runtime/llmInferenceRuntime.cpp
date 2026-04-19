@@ -565,6 +565,7 @@ bool LLMInferenceRuntime::handleRequest(
                 LOG_ERROR("LLMInferenceRuntime(): Vision inference failed. This request cannot be handled.");
                 return false;
             }
+
         }
     }
     else

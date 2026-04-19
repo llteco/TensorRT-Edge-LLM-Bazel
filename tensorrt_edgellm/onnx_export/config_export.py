@@ -134,7 +134,12 @@ def _export_hybrid_mamba_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         llm_config["partial_rotary_factor"] = 1.0
 
     layers_block_type = config_dict.get("layers_block_type", [])
-    if not layers_block_type:
+    layer_types = config_dict.get("layer_types", [])
+    if layer_types:
+        # Qwen3.5 style: linear_attention = mamba, full_attention = attention
+        num_mamba = sum(1 for t in layer_types if t == "linear_attention")
+        num_attention = sum(1 for t in layer_types if t == "full_attention")
+    elif not layers_block_type:
         pattern = config_dict.get("hybrid_override_pattern", "")
         num_mamba = pattern.count("M")
         num_attention = pattern.count("*")
@@ -153,8 +158,12 @@ def _export_hybrid_mamba_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     ssm_state_size = llm_config["ssm_state_size"]
     n_groups = config_dict.get("n_groups",
                                config_dict.get("mamba_n_groups", 1))
-    llm_config[
-        "conv_dim"] = mamba_num_heads * mamba_head_dim + 2 * n_groups * ssm_state_size
+    if "conv_dim" in config_dict:
+        # Allow explicit conv_dim (e.g., Qwen3.5 GatedDeltaNet)
+        llm_config["conv_dim"] = config_dict["conv_dim"]
+    else:
+        llm_config[
+            "conv_dim"] = mamba_num_heads * mamba_head_dim + 2 * n_groups * ssm_state_size
     llm_config["conv_kernel"] = config_dict.get(
         "conv_kernel", config_dict.get("mamba_d_conv", 4))
 

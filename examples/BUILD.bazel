@@ -72,7 +72,10 @@ cc_binary(
         "//cpp:edgellm_tokenizer",
         "@nlohmann_json//:json",
         "@tensorrt",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(
@@ -85,7 +88,10 @@ cc_binary(
         ":example_utils",
         "//cpp:edgellm_core",
         "@tensorrt",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(
@@ -112,7 +118,10 @@ cc_binary(
     deps = [
         "//cpp:edgellm_builder",
         "@tensorrt",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(
@@ -127,17 +136,8 @@ cc_binary(
         "//cpp:edgellm_tokenizer",
         "@nlohmann_json//:json",
         "@tensorrt",
-    ],
-)
-
-filegroup(
-    name = "examples",
-    srcs = [
-        ":audio_build",
-        ":llm_bench",
-        ":llm_build",
-        ":llm_inference",
-        ":qwen3_tts_inference",
-        ":visual_build",
-    ],
+    ] + select({
+        "//cpp:static_plugin_enabled": ["//cpp:edgellm_plugins_static"],
+        "//conditions:default": [],
+    }),
 )

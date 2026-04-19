@@ -99,7 +99,26 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
         ? jsonConfig
         : jsonConfig["text_config"];
     mConfig.vocabSize = subConfig["vocab_size"].get<int32_t>();
-    mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+    if (subConfig.contains("rope_theta"))
+    {
+        mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+    }
+    else if (subConfig.contains("rope_parameters") && subConfig["rope_parameters"].contains("rope_theta"))
+    {
+        mConfig.mropeTheta = subConfig["rope_parameters"]["rope_theta"].get<float>();
+    }
+    else
+    {
+        mConfig.mropeTheta = 1000000.0f;
+        LOG_WARNING("rope_theta not found in config, using default value: %f", mConfig.mropeTheta);
+    }
+
+    if (subConfig.contains("rope_parameters") && subConfig["rope_parameters"].contains("mrope_section"))
+    {
+        mConfig.mropeSection = subConfig["rope_parameters"]["mrope_section"].get<std::vector<int32_t>>();
+        LOG_INFO("QwenViTRunner: mrope_section = [%d, %d, %d]",
+            mConfig.mropeSection[0], mConfig.mropeSection[1], mConfig.mropeSection[2]);
+    }
 
     if (mModelType == multimodal::ModelType::QWEN2_5_VL)
     {
@@ -589,9 +608,10 @@ void QwenViTRunner::generateMropeParams(std::vector<std::vector<int32_t>> const&
     check::check(
         ropeRotaryCosSinDevice.reshape({activeBatchSize, maxPositionEmbeddings, rotaryDim}), "Tensor reshape failed");
     bool interleaved = (mModelType == multimodal::ModelType::QWEN3_VL);
+    int32_t const* mropeSectionPtr = mConfig.mropeSection.empty() ? nullptr : mConfig.mropeSection.data();
     kernel::initializeMRopeCosSin(ropeRotaryCosSinDevice.dataPointer<float>(),
         mMropePositionIdsDevice.dataPointer<int64_t>(), mConfig.mropeTheta, rotaryDim, maxPositionEmbeddings,
-        activeBatchSize, interleaved, stream);
+        activeBatchSize, interleaved, stream, mropeSectionPtr);
 }
 
 void QwenViTRunner::getWindowIndex(

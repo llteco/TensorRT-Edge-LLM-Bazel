@@ -14,7 +14,14 @@
       "suffix": "<|im_end|>\n"
     }
   },
-  "content_types": {},
+  "content_types": {
+    "image": {
+      "format": "<|vision_start|><|image_pad|><|vision_end|>"
+    },
+    "video": {
+      "format": "<|vision_start|><|video_pad|><|vision_end|>"
+    }
+  },
   "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
   "default_system_prompt": ""
 }
