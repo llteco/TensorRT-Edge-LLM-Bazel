@@ -192,11 +192,22 @@ def get_llm_calib_dataloader(
             f"Unsupported dataset name or local repo directory: {dataset_dir}."
         )
 
-    batch_encoded = tokenizer.batch_encode_plus(dataset,
-                                                return_tensors="pt",
-                                                padding=True,
-                                                truncation=True,
-                                                max_length=max_length)
+    if hasattr(tokenizer, "batch_encode_plus"):
+        batch_encoded = tokenizer.batch_encode_plus(
+            dataset,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+    else:
+        batch_encoded = tokenizer(
+            dataset,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
 
     calib_dataloader = DataLoader(batch_encoded["input_ids"],
                                   batch_size=batch_size,

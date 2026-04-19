@@ -28,6 +28,8 @@ from transformers.models.qwen3_moe.modeling_qwen3_moe import \
 from .attention_plugin import attention_plugin
 from .attention_trt import EdgeLLMAttentionTRTNative
 from .layer_utils import EdgeLLMQKNorm, EdgeLLMQKVProj
+from .gdn_plugin import (gated_delta_net_causal_conv1d_plugin,
+                         gated_delta_rule_plugin)
 from .mamba_plugin import causal_conv1d_plugin, update_ssm_state_plugin
 
 # FP8 (E4M3) quantization constants
@@ -38,12 +40,12 @@ FP8_E4M3_MAX: float = 448.0
 class PromptTuningEmbedding(torch.nn.Module):
     """
     Prompt Tuning Embedding for multimodal models.
-    
+
     This module combines text embeddings with visual embeddings for models that support
     both text and image inputs. It handles the mapping between text tokens and visual
     tokens in the vocabulary space by using token IDs beyond the normal vocabulary size
     to represent visual tokens.
-    
+
     Attributes:
         embedding: Base token embedding layer for text tokens
         vocab_size: Size of the vocabulary for text tokens
@@ -55,7 +57,7 @@ class PromptTuningEmbedding(torch.nn.Module):
     ) -> None:
         """
         Initialize the PromptTuningEmbedding module.
-        
+
         Args:
             embedding: Base token embedding layer for text tokens
         """
@@ -67,11 +69,11 @@ class PromptTuningEmbedding(torch.nn.Module):
                 image_embeds: torch.Tensor) -> torch.Tensor:
         """
         Forward pass combining text and visual embeddings.
-        
+
         Args:
             input_ids: Token IDs with visual tokens having IDs > vocab_size
             image_embeds: Visual embeddings for image tokens
-            
+
         Returns:
             Combined embeddings of text and visual tokens
         """
@@ -96,14 +98,14 @@ class PromptTuningEmbedding(torch.nn.Module):
 class EdgeLLMAttention(nn.Module):
     """
     Multi-headed attention using the custom attention plugin for optimized inference.
-    
+
     This module replaces the standard attention mechanism with a custom TensorRT plugin
     that fuses RoPE application, KV cache management, and attention computation.
     It supports both standard models and EAGLE draft variants.
-    
+
     For EAGLE3 draft models, the input dimension is doubled (2x hidden_size) to handle
     concatenated input embeddings and hidden states.
-    
+
     Attributes:
         q_proj: Query projection layer
         k_proj: Key projection layer
@@ -125,7 +127,7 @@ class EdgeLLMAttention(nn.Module):
                  eagle3_draft: bool = False) -> None:
         """
         Initialize the EdgeLLMAttention module.
-        
+
         Args:
             attention_module: Original attention module to extract components from
             eagle3_draft: Whether this is an EAGLE3 draft model
@@ -160,6 +162,14 @@ class EdgeLLMAttention(nn.Module):
 
         # EAGLE3 draft uses 2x hidden_size input dimension
         self.eagle3_draft: bool = eagle3_draft
+
+        # Detect Qwen3.5-style gated Q projection (q_proj output is 2x expected)
+        expected_q_out = self.num_attention_heads * self.head_dim
+        if hasattr(self.qkv_proj, 'q_proj'):
+            actual_q_out = self.qkv_proj.q_proj.out_features
+        else:
+            actual_q_out = expected_q_out
+        self.use_q_gate: bool = bool(actual_q_out == expected_q_out * 2)
 
         if hasattr(attention_module, 'k_bmm_quantizer') and hasattr(
                 attention_module, 'v_bmm_quantizer'):
@@ -197,7 +207,7 @@ class EdgeLLMAttention(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for attention computation using the attention plugin for ONNX export.
-        
+
         Args:
             hidden_states: Input hidden states of shape (batch_size, seq_len, hidden_size)
             past_key_value: Past key-value cache of shape (batch_size, 2, num_kv_heads, max_position_embeddings, head_dim)
@@ -206,7 +216,7 @@ class EdgeLLMAttention(nn.Module):
             kvcache_start_index: Start index of KV cache of shape (kv_cache_start_batch_size,), required
             attention_mask: Attention mask of shape (batch_size, seq_len, seq_len + past_len), optional
             position_ids: Position IDs of shape (batch_size, seq_len), optional
-            
+
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Attention output and updated key-value cache
         """
@@ -214,6 +224,14 @@ class EdgeLLMAttention(nn.Module):
 
         # Apply Q, K, V projections
         query_states, key_states, value_states = self.qkv_proj(hidden_states)
+
+        gate: Optional[torch.Tensor] = None
+        if self.use_q_gate:
+            # Qwen3.5: q_proj outputs 2x dim (query + gate)
+            query_states = query_states.reshape(bsz, q_len, -1, self.head_dim * 2)
+            query_part, gate = torch.chunk(query_states, 2, dim=-1)
+            query_states = query_part.reshape(bsz, q_len, -1)
+            gate = gate.reshape(bsz, q_len, -1)
 
         norm_shape = [bsz, q_len, -1, self.head_dim]
         query_states, key_states = self.qk_norm(query_states, key_states,
@@ -262,6 +280,10 @@ class EdgeLLMAttention(nn.Module):
 
         # Reshape output and apply final projection
         attn_output = attn_output.reshape(bsz, q_len, -1).to(dtype)
+
+        if self.use_q_gate and gate is not None:
+            attn_output = attn_output * torch.sigmoid(gate.to(dtype))
+
         attn_output = self.o_proj(attn_output)
 
         return attn_output, present_key_value
@@ -273,11 +295,11 @@ class EdgeLLMAttention(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass for attention computation for quantization.
-        
+
         Args:
             hidden_states: Input hidden states of shape (batch_size, seq_len, hidden_size)
             position_embeddings: Tuple of tensors, containing cos and sin
-            
+
         Returns:
             Attention output of shape (batch_size, seq_len, hidden_size)
         """
@@ -336,16 +358,16 @@ class EdgeLLMAttention(nn.Module):
 class EdgeLLMDecoderLayer(nn.Module):
     """
     Decoder layer with custom attention and support for EAGLE draft models.
-    
+
     This module implements a transformer decoder layer with custom attention
     and support for different model architectures including Llama, Qwen, and
     EAGLE draft variants. It handles the differences in layer normalization
     and model structure between these architectures.
-    
+
     For EAGLE3 draft models, this layer processes both input embeddings and
     hidden states separately, applying normalization to each before concatenation.
     For standard, it processes only hidden states.
-    
+
     Attributes:
         hidden_size: Hidden dimension size
         mlp: Multi-layer perceptron component
@@ -363,7 +385,7 @@ class EdgeLLMDecoderLayer(nn.Module):
                  eagle3_draft: bool = False) -> None:
         """
         Initialize the EdgeLLMDecoderLayer module.
-        
+
         Args:
             config_or_module: Either a decoder layer module or configuration object
             index: Layer index (used for determining layer normalization setup)
@@ -465,7 +487,7 @@ class EdgeLLMDecoderLayer(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through the decoder layer for ONNX export.
-        
+
         Args:
             hidden_states: Input hidden states of shape (batch_size, seq_len, embed_dim)
             past_key_value: Cached past key-value states of shape (batch_size, 2, num_kv_heads, max_position_embeddings, head_dim)
@@ -475,7 +497,7 @@ class EdgeLLMDecoderLayer(nn.Module):
             inputs_embeds: Input embeddings for EAGLE3 draft of shape (batch_size, seq_len, embed_dim), optional
             attention_mask: Attention mask of shape (batch_size, seq_len, seq_len + past_len), optional
             position_ids: Position IDs of shape (batch_size, seq_len), optional
-            
+
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Output hidden states and updated key-value cache
         """
@@ -594,7 +616,7 @@ class EdgeLLMDecoderLayer(nn.Module):
 class EdgeLLMDecoderLayerTRTNative(nn.Module):
     """
     Decoder layer with TensorRT native attention operations.
-    
+
     This module implements a transformer decoder layer with TensorRT native attention operation.
     Attributes:
         hidden_size: Hidden dimension size
@@ -610,7 +632,7 @@ class EdgeLLMDecoderLayerTRTNative(nn.Module):
                  eagle3_draft: bool = False) -> None:
         """
         Initialize the EdgeLLMDecoderLayerTRTNative module.
-        
+
         Args:
             config_or_module: Decoder layer module
             torch_dtype: Data type of the module
@@ -722,7 +744,7 @@ class EdgeLLMDecoderLayerTRTNative(nn.Module):
             torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Forward pass through the decoder layer for ONNX export.
-        
+
         Args:
             hidden_states: Input hidden states of shape (batch, seq_len, embed_dim)
             rope_rotary_cos_sin: RoPE rotary embeddings of shape (batch, seq_len, head_dim)
@@ -733,7 +755,7 @@ class EdgeLLMDecoderLayerTRTNative(nn.Module):
             attention_mask: Attention mask of shape (batch, seq_len, seq_len + past_len), optional
             position_ids: Position IDs of shape (batch, seq_len), optional
             inputs_embeds: Input embeddings for EAGLE3 draft (batch, seq_len, hidden_size), optional
-            
+
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (hidden_states, present_k_cache, present_v_cache)
         """
@@ -932,6 +954,159 @@ class EdgeLLMMambaLayer(nn.Module):
         return (normed * self.norm_weight).to(x.dtype)
 
 
+class EdgeLLMGatedDeltaNetLayer(nn.Module):
+    """Wraps Qwen3_5GatedDeltaNet for ONNX export using TensorRT GDN plugins.
+
+    Replaces the causal_conv1d + chunk/recurrent_gated_delta_rule kernels with
+    ``gated_delta_net_causal_conv1d_plugin`` and ``gated_delta_rule_plugin``
+    custom ops so that ``torch.onnx.export`` traces them into the corresponding
+    ONNX ops consumed by the C++ TensorRT plugins.
+
+    Projection layers (in_proj_qkv, in_proj_z, in_proj_b, in_proj_a, out_proj)
+    remain standard ``nn.Linear`` ops in ONNX.
+    """
+
+    def __init__(self, mixer: nn.Module) -> None:
+        super().__init__()
+
+        # Config extracted from the mixer
+        self.num_v_heads: int = mixer.num_v_heads
+        self.num_k_heads: int = mixer.num_k_heads
+        self.head_k_dim: int = mixer.head_k_dim
+        self.head_v_dim: int = mixer.head_v_dim
+        self.key_dim: int = mixer.key_dim
+        self.value_dim: int = mixer.value_dim
+        self.conv_dim: int = mixer.conv_dim
+        self.conv_kernel_size: int = mixer.conv_kernel_size
+
+        # Projections (keep the original nn.Linear modules)
+        self.in_proj_qkv = mixer.in_proj_qkv
+        self.in_proj_z = mixer.in_proj_z
+        self.in_proj_b = mixer.in_proj_b
+        self.in_proj_a = mixer.in_proj_a
+        self.out_proj = mixer.out_proj
+
+        # Conv1d weights: mixer.conv1d is nn.Conv1d with shape [conv_dim, 1, kernel]
+        self.register_buffer("conv1d_weight",
+                             mixer.conv1d.weight.data.squeeze(1))
+        self.register_buffer(
+            "conv1d_bias",
+            mixer.conv1d.bias.data
+            if mixer.conv1d.bias is not None else torch.zeros(self.conv_dim),
+        )
+
+        # Gated Delta Rule parameters
+        self.A_log = mixer.A_log  # nn.Parameter [num_v_heads]
+        self.dt_bias = mixer.dt_bias  # nn.Parameter [num_v_heads]
+
+        # Gated RMSNorm parameters
+        self.register_buffer("norm_weight", mixer.norm.weight.data)
+        self.norm_eps: float = mixer.norm.variance_epsilon
+
+        # Head repeat factor (Q/K heads are grouped)
+        self.qk_head_repeat: int = self.num_v_heads // self.num_k_heads
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            hidden_states: [batch, seq_len, hidden_size]
+            conv_state: [batch, conv_dim, conv_kernel_size]
+            recurrent_state: [batch, num_v_heads, head_k_dim, head_v_dim]
+
+        Returns:
+            (output [batch, seq_len, hidden_size],
+             conv_state_out [batch, conv_dim, conv_kernel_size],
+             recurrent_state_out [batch, num_v_heads, head_k_dim, head_v_dim])
+        """
+        batch_size, seq_len, _ = hidden_states.shape
+
+        # 1. Input projections
+        mixed_qkv = self.in_proj_qkv(hidden_states)
+        mixed_qkv = mixed_qkv.transpose(1, 2)  # [B, conv_dim, S]
+
+        z = self.in_proj_z(hidden_states)
+        z = z.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
+
+        b = self.in_proj_b(hidden_states)
+        a = self.in_proj_a(hidden_states)
+
+        # 2. Causal conv1d via plugin (SiLU is applied inside the C++ plugin)
+        mixed_qkv, conv_state_out = gated_delta_net_causal_conv1d_plugin(
+            mixed_qkv,
+            self.conv1d_weight,
+            self.conv1d_bias,
+            conv_state,
+            kernel_size=self.conv_kernel_size,
+            activation=0,  # 0 = SiLU in the C++ plugin
+        )
+
+        # 3. Split into Q, K, V and reshape to head dims
+        mixed_qkv = mixed_qkv.transpose(1, 2)  # [B, S, conv_dim]
+        query, key, value = torch.split(
+            mixed_qkv,
+            [self.key_dim, self.key_dim, self.value_dim],
+            dim=-1,
+        )
+        query = query.reshape(batch_size, seq_len, self.num_k_heads,
+                              self.head_k_dim)
+        key = key.reshape(batch_size, seq_len, self.num_k_heads,
+                          self.head_k_dim)
+        value = value.reshape(batch_size, seq_len, self.num_v_heads,
+                               self.head_v_dim)
+
+        # 4. Compute beta and g
+        dtype = query.dtype
+        beta = b.sigmoid()
+        g = -self.A_log.to(dtype).exp() * torch.nn.functional.softplus(
+            a.to(dtype) + self.dt_bias.to(dtype))
+
+        # 5. Repeat Q/K heads if needed
+        if self.qk_head_repeat > 1:
+            query = query.repeat_interleave(self.qk_head_repeat, dim=2)
+            key = key.repeat_interleave(self.qk_head_repeat, dim=2)
+
+        # 6. Gated delta rule via plugin
+        core_attn_out, recurrent_state_out = gated_delta_rule_plugin(
+            query,
+            key,
+            value,
+            g,
+            beta,
+            recurrent_state,
+            num_v_heads=self.num_v_heads,
+            head_v_dim=self.head_v_dim,
+            head_k_dim=self.head_k_dim,
+            use_qk_l2norm=1,
+        )
+
+        # 7. Gated RMSNorm (replicate Qwen3_5RMSNormGated logic)
+        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
+        z = z.reshape(-1, self.head_v_dim)
+        core_attn_out = self._gated_rmsnorm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+
+        # 8. Output projection
+        output = self.out_proj(core_attn_out)
+
+        return output, conv_state_out, recurrent_state_out
+
+    def _gated_rmsnorm(self, x: torch.Tensor,
+                       gate: torch.Tensor) -> torch.Tensor:
+        """Replicate Qwen3_5RMSNormGated forward (norm_before_gate=True)."""
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.norm_eps)
+        x = self.norm_weight * x.to(input_dtype)
+        x = x * torch.nn.functional.silu(gate.to(torch.float32))
+        return x.to(input_dtype)
+
+
 class EdgeLLMHybridBlock(nn.Module):
     """Wraps a single NemotronHBlock for ONNX export.
 
@@ -1009,3 +1184,75 @@ class EdgeLLMHybridBlock(nn.Module):
         hidden_states = self.mixer(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
+
+
+class EdgeLLMQwen3_5Block(nn.Module):
+    """Wraps a single Qwen3_5DecoderLayer for ONNX export.
+
+    Supports two layer types:
+      - ``"linear_attention"``: pre-norm → :class:`EdgeLLMGatedDeltaNetLayer` → residual → post-norm → MLP → residual
+      - ``"full_attention"``: pre-norm → :class:`EdgeLLMAttention` → residual → post-norm → MLP → residual
+    """
+
+    def __init__(self,
+                 hf_layer: nn.Module,
+                 torch_dtype: torch.dtype = torch.float16) -> None:
+        super().__init__()
+        self.layer_type: str = hf_layer.layer_type
+        self.input_layernorm = hf_layer.input_layernorm.to(torch_dtype)
+        self.post_attention_layernorm = hf_layer.post_attention_layernorm.to(torch_dtype)
+        self.mlp = hf_layer.mlp
+
+        if self.layer_type == "linear_attention":
+            self.mixer = EdgeLLMGatedDeltaNetLayer(hf_layer.linear_attn)
+        elif self.layer_type == "full_attention":
+            self.mixer = EdgeLLMAttention(hf_layer.self_attn)
+        else:
+            raise ValueError(f"Unknown layer_type: {self.layer_type}")
+
+    def forward_linear_attention(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, conv_state_out, recurrent_state_out = self.mixer(
+            hidden_states, conv_state, recurrent_state)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        return hidden_states, conv_state_out, recurrent_state_out
+
+    def forward_full_attention(
+        self,
+        hidden_states: torch.Tensor,
+        past_key_value: torch.Tensor,
+        rope_rotary_cos_sin: torch.Tensor,
+        context_lengths: torch.Tensor,
+        kvcache_start_index: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, present_key_value = self.mixer(
+            hidden_states=hidden_states,
+            past_key_value=past_key_value,
+            rope_rotary_cos_sin=rope_rotary_cos_sin,
+            context_lengths=context_lengths,
+            kvcache_start_index=kvcache_start_index,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+        )
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        return hidden_states, present_key_value

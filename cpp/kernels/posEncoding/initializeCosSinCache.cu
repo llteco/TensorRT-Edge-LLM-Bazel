@@ -27,6 +27,8 @@ namespace trt_edgellm
 namespace kernel
 {
 
+__constant__ int32_t kMropeSection[3];
+
 template <int32_t RotaryDim>
 __global__ void initializeNormalRopeCosSinKernel(
     float* cosSinCache, float rotaryBaseFrequency, float rotaryScale, int32_t rotaryEmbeddingMaxPositions)
@@ -218,14 +220,17 @@ void initializeLongRopeCosSin(float* shortCosSinCache, float* longCosSinCache, f
 
 template <int32_t RotaryDim>
 __global__ void initializeMRopeCosSinKernel(float* cosSinCache, int64_t* mropePositionIds, float rotaryBaseFrequency,
-    int64_t rotaryEmbeddingMaxPositions, bool interleaved)
+    int64_t rotaryEmbeddingMaxPositions, bool interleaved, int32_t const* mropeSection)
 {
     // In this kernel, each warp compute 4 "position" of the cos/sin cache, and loop until max position.
     // Each CTA will be assigned 4 warps so it proceeds 16 positions in an iteration.
     // mropePositionIds: [bs, 3, rotaryEmbeddingMaxPositions]
     //     Represent [T, H, W] information for each token position
     // cosSinCache: [bs, rotaryEmbeddingMaxPositions, rotaryDim]
-    //     Combine [T, H, W] information into rotaryDim. Each will take [16, 24, 24] dims.
+    //     Combine [T, H, W] information into rotaryDim.
+    // mropeSection: if provided, defines the per-section sizes [T, H, W] for interleaved grouping.
+    //     For example, [11, 11, 10] means each 32-dim block is [T(11), H(11), W(10)],
+    //     repeated twice for RotaryDim=64. This matches transformers' mrope_section behavior.
 
     uint32_t const bIdx = blockIdx.x;
     uint32_t const tIdx = threadIdx.x;
@@ -257,16 +262,27 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, int64_t* mropePo
         {
             uint32_t zid = tIdx + i * 8;
 
-            // Determine which group of T, H, W to use based on interleaved flag.
-            // Non-interleaved format: [TTT...HHH...WWW] Qwen2-VL
-            //     mrope section is [16, 24, 24], dims 0~15 is T, 16~39 is H, 40~63 is W
-            //     Each iteration i processes 8 dims, i 0~1 is T, 2~4 is H, 5~7 is W
-            // Interleaved format: [THWTHWHTHW...TTTT] Qwen3-VL
-            //     mrope section is [24, 20, 20]
-            //     [THWTHWHTHW...TTTT] has 20 groups of THW and 4 additional T
             int32_t groupIdx;
-            if (interleaved)
+            if (mropeSection != nullptr)
             {
+                int32_t sectionSize = kMropeSection[0] + kMropeSection[1] + kMropeSection[2];
+                int32_t zidInSection = zid % sectionSize;
+                if (zidInSection < kMropeSection[0])
+                {
+                    groupIdx = 0;
+                }
+                else if (zidInSection < kMropeSection[0] + kMropeSection[1])
+                {
+                    groupIdx = 1;
+                }
+                else
+                {
+                    groupIdx = 2;
+                }
+            }
+            else if (interleaved)
+            {
+                // Legacy interleaved format: [THWTHWHTHW...TTTT] Qwen3-VL with fixed [24, 20, 20]
                 if (zid >= 60)
                 {
                     groupIdx = 0;
@@ -278,6 +294,7 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, int64_t* mropePo
             }
             else
             {
+                // Legacy non-interleaved format: [TTT...HHH...WWW] Qwen2-VL with fixed [16, 24, 24]
                 if (i < 2)
                 {
                     groupIdx = 0;
@@ -305,7 +322,8 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, int64_t* mropePo
 }
 
 void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
-    int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, cudaStream_t stream)
+    int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, cudaStream_t stream,
+    int32_t const* mropeSection)
 {
     // Each CTA get assigned 128 threads.
     dim3 block(8, 16);
@@ -317,6 +335,7 @@ void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float 
     void* kernelPtr{nullptr};
     switch (rotaryDim)
     {
+    case 64: kernelPtr = (void*) initializeMRopeCosSinKernel<64>; break;
     case 128: kernelPtr = (void*) initializeMRopeCosSinKernel<128>; break;
     default:
         throw std::runtime_error("Un-implemented rotaryDim for initializeMRopeCosSin: " + std::to_string(rotaryDim));
@@ -327,9 +346,15 @@ void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float 
     int64_t const numBlocks = std::min(static_cast<int64_t>(maxBlockPerSM * numSMs), rotaryEmbeddingMaxPositions / 16);
     dim3 grid(numBlocks, batchSize);
 
+    // Copy mropeSection to constant memory if provided
+    if (mropeSection != nullptr)
+    {
+        CUDA_CHECK(cudaMemcpyToSymbolAsync(kMropeSection, mropeSection, 3 * sizeof(int32_t), 0, cudaMemcpyHostToDevice, stream));
+    }
+
     void* kernelArgs[] = {reinterpret_cast<void*>(&cosSinCache), reinterpret_cast<void*>(&mropePositionIds),
         static_cast<void*>(&rotaryBaseFrequency), static_cast<void*>(&rotaryEmbeddingMaxPositions),
-        static_cast<void*>(&interleaved)};
+        static_cast<void*>(&interleaved), static_cast<void*>(&mropeSection)};
     CUDA_CHECK(cudaLaunchKernel(kernelPtr, grid, block, kernelArgs, 0, stream));
 }
 

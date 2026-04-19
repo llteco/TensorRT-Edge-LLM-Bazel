@@ -24,6 +24,7 @@ import os
 from typing import Optional
 
 import torch
+from transformers import AutoConfig, AutoModelForImageTextToText
 
 from tensorrt_edgellm.quantization.visual_quantization import quantize_visual
 # Import visual model wrappers
@@ -35,6 +36,8 @@ from tensorrt_edgellm.visual_models.qwen2_5_vl_model import (
     Qwen2_5_VisionTransformerPretrainedModelPatch, export_qwen2_5_vl_visual)
 from tensorrt_edgellm.visual_models.qwen2_vl_model import (
     Qwen2VisionTransformerPretrainedModelPatch, export_qwen2_vl_visual)
+from tensorrt_edgellm.visual_models.qwen3_5_model import (
+    Qwen3_5VisionModelPatch, export_qwen3_5_visual)
 from tensorrt_edgellm.visual_models.qwen3_vl_model import (
     Qwen3VLVisionModelPatch, export_qwen3_vl_visual)
 
@@ -49,7 +52,17 @@ def _export_qwen_visual(model, model_type: str, model_dir: str,
     """
     Export visual models in the Qwen family (qwen2/qwen2.5/qwen3/qwen3-omni).
     """
-    visual_model = model.visual if model_type != 'qwen3_omni' else model.thinker.visual
+    if model_type == 'qwen3_omni':
+        visual_model = model.thinker.visual
+    elif hasattr(model, 'visual'):
+        visual_model = model.visual
+    elif hasattr(model, 'model') and hasattr(model.model, 'visual'):
+        visual_model = model.model.visual
+    else:
+        raise ValueError(
+            f"Model type '{model_type}' does not expose a visual tower. "
+            "Please provide a multimodal checkpoint with vision support."
+        )
 
     # Quantize the original visual model first
     if quantization == "fp8":
@@ -79,6 +92,10 @@ def _export_qwen_visual(model, model_type: str, model_dir: str,
             visual_model)
         wrapped_model.eval().to(device)
         export_qwen2_5_vl_visual(wrapped_model, output_dir, torch_dtype)
+    elif model_type == 'qwen3_5':
+        wrapped_model = Qwen3_5VisionModelPatch(visual_model)
+        wrapped_model.eval().to(device)
+        export_qwen3_5_visual(wrapped_model, output_dir, torch_dtype)
     else:
         # qwen3_vl and qwen3_omni share the same visual wrapper/export path
         wrapped_model = Qwen3VLVisionModelPatch(visual_model)
@@ -94,21 +111,21 @@ def visual_export(model_dir: str,
                   device: str = "cuda") -> str:
     """
     Export visual model using the appropriate wrapper based on model architecture.
-    
+
     This function loads a multimodal model, extracts its visual component, wraps it
     in the appropriate model wrapper, applies quantization if requested, and exports
     it to ONNX format.
-    
+
     Args:
         model_dir: Directory containing the torch model
         output_dir: Directory to save the exported ONNX model
         dtype: Data type for export (currently only "fp16" supported)
         quantization: Quantization type ("fp8" or None)
         device: Device to load the model on (default: "cuda", options: cpu, cuda, cuda:0, cuda:1, etc.)
-    
+
     Returns:
         str: Path to the output directory where the exported model is saved
-    
+
     Raises:
         ValueError: If unsupported dtype or quantization is provided
         ValueError: If unsupported model type is detected
@@ -133,10 +150,27 @@ def visual_export(model_dir: str,
     # Get visual model from the multimodal model
     model_type = model.config.model_type
 
+    # Some Qwen3.5 checkpoints can be loaded through AutoModelForCausalLM first,
+    # yielding a text-only config view (qwen3_5_text). Recover multimodal view here.
+    if model_type == 'qwen3_5_text':
+        raw_cfg = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+        raw_cfg_dict = raw_cfg.to_dict()
+        if raw_cfg.model_type == 'qwen3_5' and 'vision_config' in raw_cfg_dict:
+            model = AutoModelForImageTextToText.from_pretrained(
+                model_dir, torch_dtype=torch_dtype,
+                trust_remote_code=True).to(device)
+            model_type = model.config.model_type
+        else:
+            raise ValueError(
+                "Unsupported model type: qwen3_5_text. "
+                "This checkpoint does not include a visual tower. "
+                "Please use a Qwen3.5-VL checkpoint for visual export."
+            )
+
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
 
-    if model_type in ['qwen2_vl', 'qwen2_5_vl', 'qwen3_vl', 'qwen3_omni']:
+    if model_type in ['qwen2_vl', 'qwen2_5_vl', 'qwen3_vl', 'qwen3_5', 'qwen3_omni']:
         _export_qwen_visual(model,
                             model_type,
                             model_dir,
@@ -184,13 +218,26 @@ def visual_export(model_dir: str,
     with open(os.path.join(output_dir, "config.json"), "w") as f:
         json.dump(config_dict, f, indent=2)
 
-    # Export processor configuration to JSON if exists
+    # Export processor assets if present.
+    # Some multimodal processors (e.g. Qwen3.5 visual-only path) expose
+    # `audio_tokenizer=None`, while transformers' save_pretrained may still
+    # dereference `audio_tokenizer.name_or_path` and fail.
     if processor is not None:
-        # Phi4MMProcessor may not define audio_tokenizer, but transformers'
-        # save_pretrained expects the attribute.
-        if not hasattr(processor, "audio_tokenizer"):
-            processor.audio_tokenizer = None
-        processor.save_pretrained(output_dir)
+        has_audio_tokenizer_attr = hasattr(processor, "audio_tokenizer")
+        audio_tokenizer = getattr(processor, "audio_tokenizer", None)
+
+        if has_audio_tokenizer_attr and audio_tokenizer is None:
+            # Save visual-relevant components only and avoid the buggy branch.
+            if hasattr(processor,
+                       "image_processor") and processor.image_processor is not None:
+                processor.image_processor.save_pretrained(output_dir)
+            if hasattr(processor,
+                       "feature_extractor") and processor.feature_extractor is not None:
+                processor.feature_extractor.save_pretrained(output_dir)
+            if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+                processor.tokenizer.save_pretrained(output_dir)
+        else:
+            processor.save_pretrained(output_dir)
 
     print(
         f"Visual export completed for {model_type} with dtype={dtype}, quantization={quantization}, device={device}"
