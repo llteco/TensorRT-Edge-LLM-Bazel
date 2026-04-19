@@ -454,7 +454,7 @@ if __name__ == "__main__":
         arch_options = [120, 121]
         cubin_dir = "../../cpp/kernels/decodeAttentionKernels/cubin_sm12x/"
     else:
-        arch_options = [80, 86, 87, 89, 100, 101]
+        arch_options = [80, 86, 87, 89, 100]
         cubin_dir = "../../cpp/kernels/decodeAttentionKernels/cubin/"
 
     if os.path.exists(cubin_dir):
@@ -463,7 +463,7 @@ if __name__ == "__main__":
 
     edgellm_config_list = [[
         CompileMacroOption('DTYPE', 'dt', ['__half']),
-        CompileMacroOption('HEAD_ELEMS', 'd', [128, 64, 32]),
+        CompileMacroOption('HEAD_ELEMS', 'd', [256, 128, 64, 32]),
         CompileMacroOption('BEAM_WIDTH', 'beam', [1]),
         CompileMacroOption('CACHE_ELEM_ENUM', 'kvt', [0, 2]),
         CompileMacroOption('TOKENS_PER_PAGE', 'pagedKV',

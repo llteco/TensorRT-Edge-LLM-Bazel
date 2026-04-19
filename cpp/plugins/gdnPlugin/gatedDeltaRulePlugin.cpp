@@ -161,8 +161,9 @@ int32_t GatedDeltaRulePlugin::configurePlugin(nvinfer1::DynamicPluginTensorDesc 
 size_t GatedDeltaRulePlugin::getWorkspaceSize(nvinfer1::DynamicPluginTensorDesc const* inputs, int32_t /*nbInputs*/,
     nvinfer1::DynamicPluginTensorDesc const* /*outputs*/, int32_t /*nbOutputs*/) const noexcept
 {
-    int32_t batch = inputs[kIN_QUERY_IDX].desc.dims.d[0];
-    int32_t seqLen = inputs[kIN_QUERY_IDX].desc.dims.d[1];
+    // Use .max rather than .desc.dims because desc.dims has -1 for dynamic dimensions.
+    int32_t batch = inputs[kIN_QUERY_IDX].max.d[0];
+    int32_t seqLen = inputs[kIN_QUERY_IDX].max.d[1];
     size_t size = 0;
     // qNormed, kNormed if use_qk_l2norm
     if (mUseQKL2Norm)
@@ -202,14 +203,26 @@ int32_t GatedDeltaRulePlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDes
 
     if (mUseQKL2Norm)
     {
-        char* ws = static_cast<char*>(workspace);
-        qNormed = reinterpret_cast<half*>(ws);
-        kNormed = reinterpret_cast<half*>(ws + batch * seqLen * mNumVHeads * mHeadKDim * sizeof(half));
+        if (workspace == nullptr)
+        {
+            LOG_ERROR("GatedDeltaRulePlugin::enqueue: workspace is nullptr but mUseQKL2Norm=true");
+            return -1;
+        }
+        if (query == nullptr || key == nullptr)
+        {
+            LOG_ERROR("GatedDeltaRulePlugin::enqueue: query or key is nullptr");
+            return -1;
+        }
 
-        CUDA_CHECK(cudaMemcpyAsync(
-            qNormed, query, batch * seqLen * mNumVHeads * mHeadKDim * sizeof(half), cudaMemcpyDeviceToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(
-            kNormed, key, batch * seqLen * mNumVHeads * mHeadKDim * sizeof(half), cudaMemcpyDeviceToDevice, stream));
+        std::byte* ws = static_cast<std::byte*>(workspace);
+        rt::Tensor qNormedTensor = assignTensorFromWorkspace(ws, {batch, seqLen, mNumVHeads, mHeadKDim}, nvinfer1::DataType::kHALF);
+        rt::Tensor kNormedTensor = assignTensorFromWorkspace(ws, {batch, seqLen, mNumVHeads, mHeadKDim}, nvinfer1::DataType::kHALF);
+        qNormed = reinterpret_cast<half*>(qNormedTensor.rawPointer());
+        kNormed = reinterpret_cast<half*>(kNormedTensor.rawPointer());
+
+        size_t const normBytes = static_cast<size_t>(batch * seqLen) * mNumVHeads * mHeadKDim * sizeof(half);
+        CUDA_CHECK(cudaMemcpyAsync(qNormed, query, normBytes, cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(kNormed, key, normBytes, cudaMemcpyDeviceToDevice, stream));
 
         trt_edgellm::kernels::computeGatedDeltaQKNorm(
             qNormed, kNormed, qNormed, kNormed, batch * seqLen, mNumVHeads, mHeadKDim, stream);

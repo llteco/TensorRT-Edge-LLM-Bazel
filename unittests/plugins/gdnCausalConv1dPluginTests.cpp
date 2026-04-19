@@ -231,15 +231,15 @@ TEST(GatedDeltaNetCausalConv1dPlugin, PrefillNumerical)
 
     PluginTensorDesc inputDesc[4];
     inputDesc[0] = makePluginTensorDesc(xTensor->getTRTDims(), DataType::kHALF);
-    inputDesc[1] = makePluginTensorDesc(Dims(), DataType::kHALF); // optional conv_state (not used for prefill)
-    inputDesc[2] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
-    inputDesc[3] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[1] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[2] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[3] = makePluginTensorDesc(Dims(), DataType::kHALF); // optional conv_state (not used for prefill)
 
     PluginTensorDesc outputDesc[2];
     outputDesc[0] = makePluginTensorDesc(outDevice.getTRTDims(), DataType::kHALF);
     outputDesc[1] = makePluginTensorDesc(stateDevice.getTRTDims(), DataType::kHALF);
 
-    void const* inputs[4] = {xTensor->rawPointer(), nullptr, wTensor->rawPointer(), bTensor->rawPointer()};
+    void const* inputs[4] = {xTensor->rawPointer(), wTensor->rawPointer(), bTensor->rawPointer(), nullptr};
     void* outputs[2] = {outDevice.rawPointer(), stateDevice.rawPointer()};
 
     EXPECT_EQ(plugin.enqueue(inputDesc, outputDesc, inputs, outputs, nullptr, stream), 0);
@@ -339,16 +339,16 @@ TEST(GatedDeltaNetCausalConv1dPlugin, DecodeNumerical)
 
     PluginTensorDesc inputDesc[4];
     inputDesc[0] = makePluginTensorDesc(xTensor->getTRTDims(), DataType::kHALF);
-    inputDesc[1] = makePluginTensorDesc(convStateIn.getTRTDims(), DataType::kHALF);
-    inputDesc[2] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
-    inputDesc[3] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[1] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[2] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[3] = makePluginTensorDesc(convStateIn.getTRTDims(), DataType::kHALF);
 
     PluginTensorDesc outputDesc[2];
     outputDesc[0] = makePluginTensorDesc(outDevice.getTRTDims(), DataType::kHALF);
     outputDesc[1] = makePluginTensorDesc(stateDevice.getTRTDims(), DataType::kHALF);
 
     void const* inputs[4]
-        = {xTensor->rawPointer(), convStateIn.rawPointer(), wTensor->rawPointer(), bTensor->rawPointer()};
+        = {xTensor->rawPointer(), wTensor->rawPointer(), bTensor->rawPointer(), convStateIn.rawPointer()};
     void* outputs[2] = {outDevice.rawPointer(), stateDevice.rawPointer()};
 
     EXPECT_EQ(plugin.enqueue(inputDesc, outputDesc, inputs, outputs, nullptr, stream), 0);
@@ -442,17 +442,17 @@ TEST(GatedDeltaNetCausalConv1dPlugin, Batch2PrefillNumerical)
 
     PluginTensorDesc inputDesc[4];
     inputDesc[0] = makePluginTensorDesc(xTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[1] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[2] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
     Dims emptyDims{};
     emptyDims.nbDims = 0;
-    inputDesc[1] = makePluginTensorDesc(emptyDims, DataType::kHALF); // optional conv_state
-    inputDesc[2] = makePluginTensorDesc(wTensor->getTRTDims(), DataType::kHALF);
-    inputDesc[3] = makePluginTensorDesc(bTensor->getTRTDims(), DataType::kHALF);
+    inputDesc[3] = makePluginTensorDesc(emptyDims, DataType::kHALF); // optional conv_state
 
     PluginTensorDesc outputDesc[2];
     outputDesc[0] = makePluginTensorDesc(outDevice.getTRTDims(), DataType::kHALF);
     outputDesc[1] = makePluginTensorDesc(stateDevice.getTRTDims(), DataType::kHALF);
 
-    void const* inputs[4] = {xTensor->rawPointer(), nullptr, wTensor->rawPointer(), bTensor->rawPointer()};
+    void const* inputs[4] = {xTensor->rawPointer(), wTensor->rawPointer(), bTensor->rawPointer(), nullptr};
     void* outputs[2] = {outDevice.rawPointer(), stateDevice.rawPointer()};
 
     EXPECT_EQ(plugin.enqueue(inputDesc, outputDesc, inputs, outputs, nullptr, stream), 0);

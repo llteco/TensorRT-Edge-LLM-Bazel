@@ -21,6 +21,8 @@
 #include "common/logger.h"
 #include "common/tensor.h"
 #include "kernels/contextAttentionKernels/contextFMHARunner.h"
+#include "kernels/contextAttentionKernels/flexibleContextAttention.h"
+#include "kernels/contextAttentionKernels/flexibleContextAttentionRunner.h"
 #include "kernels/contextAttentionKernels/utilKernels.h"
 #include "kernels/decodeAttentionKernels/decoderXQARunner.h"
 #include "kernels/posEncoding/applyRopeWriteKV.h"
@@ -201,6 +203,17 @@ AttentionPlugin::AttentionPlugin(std::string const& name, int32_t numQHeads, int
         }
     }
 
+    // Final fallback: the flexible reference-quality kernel (arbitrary head size).
+    if (!canImplementFMHA)
+    {
+        if (kernels::canImplementFlexibleContextAttention(mHeadSize, mSMVersion, CUDA_R_16F))
+        {
+            mUseFlexibleFMHA = true;
+            canImplementFMHA = true;
+            LOG_INFO("Using flexible FMHA fallback for head_size=%d, SM=%d", mHeadSize, mSMVersion);
+        }
+    }
+
     // XQA decode kernels are always needed regardless of FMHA path.
     bool const useSpecDecode = static_cast<bool>(mEnableTreeAttention);
     bool canImplementXQA = DecoderXQARunner::canImplement(
@@ -238,22 +251,39 @@ AttentionPlugin::AttentionPlugin(std::string const& name, std::byte const* data,
     LOG_DEBUG("AttentionPlugin FMHA path: %s", mUseCuteDslFMHA ? "CuTe DSL FMHA" : "FMHA_v2");
 
     // Load FMHA kernel module based on implementation support.
+    bool canImplementFMHA = false;
 #ifdef CUTE_DSL_FMHA_ENABLED
     if (mUseCuteDslFMHA && CuteDslFMHARunner::canImplement(mHeadSize, mSMVersion))
     {
-        if (!CuteDslFMHARunner::loadLLMKernelModule())
+        if (CuteDslFMHARunner::loadLLMKernelModule())
+        {
+            canImplementFMHA = true;
+        }
+        else
         {
             LOG_WARNING("CuTe DSL FMHA kernel failed to load, falling back to FMHA_v2");
             mUseCuteDslFMHA = false;
         }
     }
-    if (!mUseCuteDslFMHA)
+    if (!canImplementFMHA)
 #endif
     {
-        if (!ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType))
+        canImplementFMHA = ContextFMHARunner::canImplement(
+            mHeadSize, mSMVersion, mDataType, AttentionInputLayout::SEPARATE_Q_K_V, ContextAttentionMaskType::CAUSAL);
+        if (canImplementFMHA)
         {
-            LOG_ERROR("Failed to load FMHA_v2 cubins for SM%d", mSMVersion);
+            if (!ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType))
+            {
+                LOG_ERROR("Failed to load FMHA_v2 cubins for SM%d", mSMVersion);
+                canImplementFMHA = false;
+            }
         }
+    }
+
+    if (!canImplementFMHA && kernels::canImplementFlexibleContextAttention(mHeadSize, mSMVersion, CUDA_R_16F))
+    {
+        mUseFlexibleFMHA = true;
+        LOG_INFO("Deserialized plugin using flexible FMHA fallback for head_size=%d", mHeadSize);
     }
 
     // XQA decode kernels are always needed regardless of FMHA path.
@@ -740,6 +770,21 @@ int32_t AttentionPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc,
         }
         else
 #endif
+        if (mUseFlexibleFMHA)
+        {
+            // Flexible fallback path for unsupported head sizes (e.g. 256).
+            // The flexible kernel always works with SEPARATE_Q_K_V layout.
+            kernel::launchApplyRopeWriteKV(ropeCosSinTensor, std::nullopt, qInputTensor, kInputTensor, vInputTensor,
+                kvCacheTensor, kvScaleQuantOrigTensor, stream, true);
+
+            kernels::FlexibleContextFMHARunner runner(
+                runtimeBatchSize, runtimeSeqLen, mNumQHeads, mNumKVHeads, mHeadSize);
+            float const scale = 1.0f / sqrtf(static_cast<float>(mHeadSize));
+            runner.run(qInputTensor.dataPointer<half>(), kInputTensor.dataPointer<half>(),
+                vInputTensor.dataPointer<half>(), attentionOutputTensor.dataPointer<half>(), scale,
+                /*causal=*/true, stream);
+        }
+        else
         {
             AttentionInputLayout attentionInputLayout = executionMode == AttentionExecutionMode::kCHUNKED_PREFILL
                 ? AttentionInputLayout::CONTIGUOUS_Q_KV

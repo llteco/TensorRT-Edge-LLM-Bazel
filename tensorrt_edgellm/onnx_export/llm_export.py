@@ -67,13 +67,16 @@ from ..llm_models.layers.int4_gemm_plugin import (
 from ..llm_models.layers.int4_moe_plugin import (
     is_moe_model, register_int4_moe_plugin_onnx_symbolic_functions,
     replace_moe_blocks_with_plugin)
+from ..llm_models.layers.gdn_plugin import \
+    register_gdn_plugin_onnx_symbolic_functions
 from ..llm_models.layers.mamba_plugin import \
     register_mamba_plugin_onnx_symbolic_functions
 from ..llm_models.model_utils import (is_gptq_model,
                                       is_incompatible_chat_template_model,
                                       load_eagle3_draft_model, load_llm_model,
                                       load_reduced_vocab_map)
-from ..llm_models.models.llm_model import EdgeLLMHybridModelForCausalLM
+from ..llm_models.models.llm_model import (EdgeLLMHybridModelForCausalLM,
+                                             EdgeLLMQwen3_5ModelForCausalLM)
 from ..llm_models.models.llm_model_trtnative import (Eagle3DraftModelTRTNative,
                                                      EdgeLLMModelTRTNative)
 from ..llm_models.models.qwen3_omni_talker import (
@@ -475,7 +478,10 @@ def create_hybrid_dummy_inputs(
                         device=device))
 
     # Conv states (only for mamba layers)
-    conv_dim = config.mamba_num_heads * config.mamba_head_dim + 2 * config.n_groups * ssm_state_size
+    if hasattr(config, 'conv_dim'):
+        conv_dim = config.conv_dim
+    else:
+        conv_dim = config.mamba_num_heads * config.mamba_head_dim + 2 * config.n_groups * ssm_state_size
     conv_kernel = config.conv_kernel
     conv_states = []
     for _ in range(num_mamba_layers):
@@ -608,6 +614,7 @@ def export_hybrid_model_to_onnx(model: EdgeLLMHybridModelForCausalLM,
 
     register_attention_plugin_onnx_symbolic_functions()
     register_mamba_plugin_onnx_symbolic_functions()
+    register_gdn_plugin_onnx_symbolic_functions()
     register_gather_nd_onnx_symbolic_functions()
 
     custom_opsets = {"trt_edgellm": ONNX_OPSET_VERSION}
@@ -941,7 +948,7 @@ def export_llm_model(model_dir: str,
         # Step 2: Export ONNX
         if trt_native_ops:
             export_model_to_onnx_with_trt_native_ops(model, model_output_dir)
-        elif isinstance(model, EdgeLLMHybridModelForCausalLM):
+        elif isinstance(model, (EdgeLLMHybridModelForCausalLM, EdgeLLMQwen3_5ModelForCausalLM)):
             export_hybrid_model_to_onnx(model, model_output_dir)
         elif is_qwen3_omni_submodel(model_name):
             dummy_inputs = create_qwen3_omni_dummy_inputs(
@@ -953,7 +960,7 @@ def export_llm_model(model_dir: str,
                                  fp8_kv_cache)
 
         # Step 3: Export config
-        if isinstance(model, EdgeLLMHybridModelForCausalLM):
+        if isinstance(model, (EdgeLLMHybridModelForCausalLM, EdgeLLMQwen3_5ModelForCausalLM)):
             model_config = export_llm_config(model.config, 'hybrid_mamba',
                                              trt_native_ops)
         else:
