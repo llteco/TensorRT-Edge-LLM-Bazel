@@ -418,15 +418,30 @@ def process_chat_template(model_dir: str, output_dir: str) -> None:
     # Only extract multimodal patterns if this is a VLM model
     if is_vlm(model_dir):
         print("Detected VLM model, extracting multimodal content patterns...")
+
+        # AutoProcessor may validate/reject placeholder image/video paths during
+        # apply_chat_template (e.g. Qwen2VLProcessor tries to load the image).
+        # Use the underlying text tokenizer for pattern extraction since it only
+        # performs text template substitution and does not touch media data.
+        pattern_tokenizer = tokenizer
+        if hasattr(tokenizer, 'tokenizer'):
+            inner = tokenizer.tokenizer
+            if getattr(inner, 'chat_template', None) and hasattr(
+                    inner, 'apply_chat_template'):
+                pattern_tokenizer = inner
+                print(
+                    "Using underlying tokenizer for multimodal pattern extraction"
+                )
+
         # Get base text-only formatted message for comparison
         user_text_only = MultimodalUserMessage()
-        text_only_formatted = _format_messages(tokenizer,
+        text_only_formatted = _format_messages(pattern_tokenizer,
                                                [system_prompt, user_text_only])
         placeholder_text = user_text_only.content[0]['text']
 
         # Extract image pattern
-        image_pattern = _extract_content_pattern(tokenizer, system_prompt,
-                                                 'image',
+        image_pattern = _extract_content_pattern(pattern_tokenizer,
+                                                 system_prompt, 'image',
                                                  '<placeholder_image_path>',
                                                  text_only_formatted,
                                                  placeholder_text)
@@ -434,8 +449,8 @@ def process_chat_template(model_dir: str, output_dir: str) -> None:
             content_types['image'] = {'format': image_pattern}
 
         # Extract video pattern
-        video_pattern = _extract_content_pattern(tokenizer, system_prompt,
-                                                 'video',
+        video_pattern = _extract_content_pattern(pattern_tokenizer,
+                                                 system_prompt, 'video',
                                                  '<placeholder_video_path>',
                                                  text_only_formatted,
                                                  placeholder_text)

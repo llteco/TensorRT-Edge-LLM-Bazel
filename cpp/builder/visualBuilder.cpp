@@ -234,12 +234,22 @@ bool VisualBuilder::setupQwenViTProfile(
     // Infer dimensions from the network
     int64_t inputDim = 0;
     int64_t ropeEmbedSize = 0;
+    std::string visualInputName = binding_names::kVisualInput;
+    bool foundVisualInputByName = false;
+
+    auto* firstInput = network.getNbInputs() > 0 ? network.getInput(0) : nullptr;
+    if (firstInput != nullptr)
+    {
+        visualInputName = firstInput->getName();
+    }
 
     for (int32_t i = 0; i < network.getNbInputs(); ++i)
     {
         auto* input = network.getInput(i);
         if (strcmp(input->getName(), binding_names::kVisualInput) == 0)
         {
+            foundVisualInputByName = true;
+            visualInputName = input->getName();
             inputDim = input->getDimensions().d[1];
         }
         else if (strcmp(input->getName(), binding_names::kRotaryPosEmb) == 0)
@@ -248,23 +258,33 @@ bool VisualBuilder::setupQwenViTProfile(
         }
     }
 
-    if (inputDim == 0)
+    // Fallback: if canonical visual input name is missing, use the first ONNX input.
+    if (!foundVisualInputByName && firstInput != nullptr)
     {
-        LOG_ERROR("Cannot infer inputDim. Do you have proper ONNX input: %s?", binding_names::kVisualInput);
-        return false;
+        inputDim = firstInput->getDimensions().d[1];
+        LOG_WARNING("Input '%s' not found. Fallback to first ONNX input '%s' as visual input.",
+            binding_names::kVisualInput, visualInputName.c_str());
     }
 
-    if (ropeEmbedSize == 0)
+    if (inputDim == 0)
     {
-        LOG_ERROR("Cannot infer ropeEmbedSize. Do you have proper ONNX input: %s?", binding_names::kRotaryPosEmb);
+        LOG_ERROR("Cannot infer inputDim from ONNX inputs.");
         return false;
     }
 
     // Base inputs
-    result &= setOptimizationProfile(&profile, binding_names::kVisualInput, createDims({minHW, inputDim}),
+    result &= setOptimizationProfile(&profile, visualInputName.c_str(), createDims({minHW, inputDim}),
         createDims({optHW, inputDim}), createDims({maxHW, inputDim}));
-    result &= setOptimizationProfile(&profile, binding_names::kRotaryPosEmb, createDims({minHW, ropeEmbedSize}),
-        createDims({optHW, ropeEmbedSize}), createDims({maxHW, ropeEmbedSize}));
+    if (ropeEmbedSize > 0)
+    {
+        result &= setOptimizationProfile(&profile, binding_names::kRotaryPosEmb, createDims({minHW, ropeEmbedSize}),
+            createDims({optHW, ropeEmbedSize}), createDims({maxHW, ropeEmbedSize}));
+    }
+    else
+    {
+        LOG_WARNING("Optional input '%s' not found. Skip optimization profile setup for it.",
+            binding_names::kRotaryPosEmb);
+    }
     int64_t maxNumImages = std::max<int64_t>(1, mBuilderConfig.maxImageTokens / mBuilderConfig.minImageTokens);
     result &= setOptimizationProfile(&profile, binding_names::kCuSeqlens, createDims({2}),
         createDims({maxNumImages + 1}), createDims({maxNumImages + 1}));

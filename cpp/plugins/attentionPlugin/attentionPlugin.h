@@ -188,6 +188,11 @@ protected:
 #else
     bool mUseCuteDslFMHA{false};
 #endif
+
+    //! Fall back to the flexible reference-quality FMHA kernel when the
+    //! optimised FMHA_v2 / CuTe DSL paths do not support the configuration
+    //! (e.g. head_size == 256).
+    bool mUseFlexibleFMHA{false};
 };
 
 //! \brief Factory class for creating AttentionPlugin instances

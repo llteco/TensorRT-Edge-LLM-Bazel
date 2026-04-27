@@ -27,6 +27,10 @@
 namespace trt_edgellm
 {
 
+// When plugin objects are statically linked into the binary, this symbol is
+// available directly and can be invoked without dlopen.
+extern "C" bool initEdgellmPlugins(void* logger, char const* libNamespace) __attribute__((weak));
+
 /*!
  * @brief Custom deleter for dynamic library handles
  *
@@ -55,6 +59,13 @@ struct DlDeleter
  */
 inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
 {
+    if (initEdgellmPlugins != nullptr)
+    {
+        LOG_INFO("Using statically linked Edge-LLM plugins.");
+        initEdgellmPlugins(static_cast<nvinfer1::ILogger*>(&gLogger), "");
+        return std::unique_ptr<void, DlDeleter>(nullptr);
+    }
+
     char const* pluginPath = std::getenv("EDGELLM_PLUGIN_PATH");
 
     if (pluginPath != nullptr)

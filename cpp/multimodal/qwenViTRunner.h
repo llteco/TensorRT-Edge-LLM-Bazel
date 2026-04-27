@@ -41,6 +41,7 @@ struct QwenViTConfig
     int32_t imageTokenId{0};           //!< Token ID for image placeholder
     int32_t videoTokenId{0};           //!< Token ID for video placeholder
     float mropeTheta{0};               //!< Multi-dimensional RoPE theta parameter
+    std::vector<int32_t> mropeSection; //!< Multi-dimensional RoPE section sizes [T, H, W]
     int64_t patchSize{0};              //!< Patch size in pixels
     int64_t temporalPatchSize{0};      //!< Temporal patch size for video
     int64_t mergeSize{0};              //!< Merge size for patches

@@ -1,14 +1,27 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Build setting for enabling static plugin linking
+# Usage: bazel build //examples:llm_build --//cpp:static_plugin=true
+bool_flag(
+    name = "static_plugin",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "static_plugin_enabled",
+    flag_values = {
+        ":static_plugin": "true",
+    },
+)
+
 filegroup(
     name = "common_cpp_srcs",
-    srcs = glob(
-        ["common/**/*.cpp"],
-        exclude = ["common/mmapReader.cpp"],
-    ) + ["common/mmapReader.cpp"],
+    srcs = glob(["common/**/*.cpp"]),
 )
 
 filegroup(
@@ -46,26 +59,6 @@ filegroup(
 )
 
 filegroup(
-    name = "runtime_cpp_srcs",
-    srcs = glob(["runtime/**/*.cpp"]),
-)
-
-filegroup(
-    name = "profiler_cpp_srcs",
-    srcs = glob(["profiling/**/*.cpp"]),
-)
-
-filegroup(
-    name = "tokenizer_cpp_srcs",
-    srcs = glob(["tokenizer/**/*.cpp"]),
-)
-
-filegroup(
-    name = "builder_cpp_srcs",
-    srcs = glob(["builder/**/*.cpp"]),
-)
-
-filegroup(
     name = "plugin_cpp_srcs",
     srcs = glob(["plugins/**/*.cpp"]),
 )
@@ -77,16 +70,26 @@ _CUDA_COMMON_COPTS = [
     "-t 0",
 ]
 
-_COMMON_COPTS = [
-    "-Wall",
-    "-Wextra",
-    "-Wno-deprecated",
-    "-Wno-unused-parameter",
-    "-Wno-unknown-pragmas",
-    "-fPIC",
-]
+_COMMON_COPTS = select({
+    "@platforms//os:windows": [
+        "/wd4100",
+        "/wd4244",
+        "/wd4505",
+    ],
+    "//conditions:default": [
+        "-Wall",
+        "-Wextra",
+        "-Wno-deprecated",
+        "-Wno-unused-parameter",
+        "-Wno-unknown-pragmas",
+        "-fPIC",
+    ],
+})
 
-_DL_LINKOPTS = ["-ldl"]
+_DL_LINKOPTS = select({
+    "@platforms//os:windows": [],
+    "//conditions:default": ["-ldl"],
+})
 
 _AARCH64_CROSS_LINKOPTS = select({
     "@platforms//cpu:aarch64": [
@@ -247,13 +250,18 @@ cuda_library(
 
 cc_library(
     name = "edgellm_core_cpp",
-    srcs = [
+    srcs = glob([
+        "profiling/**/*.cpp",
+        "runtime/**/*.cpp",
+    ]) + [
         ":common_cpp_srcs",
         ":kernels_cpp_srcs",
         ":multimodal_cpp_srcs",
-        ":profiler_cpp_srcs",
-        ":runtime_cpp_srcs",
     ],
+    hdrs = glob([
+        "profiling/**/*.h",
+        "runtime/**/*.h",
+    ]),
     copts = _COMMON_COPTS,
     defines = _FMHA_EXCLUDE_DEFINES,
     includes = _COMMON_INCLUDE_DIRS,
@@ -275,7 +283,8 @@ cc_library(
 
 cc_library(
     name = "edgellm_tokenizer",
-    srcs = [":tokenizer_cpp_srcs"],
+    srcs = glob(["tokenizer/**/*.cpp"]),
+    hdrs = glob(["tokenizer/**/*.h"]),
     copts = _COMMON_COPTS,
     includes = _COMMON_INCLUDE_DIRS,
     deps = [
@@ -286,10 +295,8 @@ cc_library(
 
 cc_library(
     name = "edgellm_builder",
-    srcs = [
-        ":builder_cpp_srcs",
-        ":common_cpp_srcs",
-    ],
+    srcs = glob(["builder/**/*.cpp"]) + [":common_cpp_srcs"],
+    hdrs = glob(["builder/**/*.h"]),
     copts = _COMMON_COPTS,
     includes = _COMMON_INCLUDE_DIRS,
     linkopts = _DL_LINKOPTS,
@@ -297,6 +304,20 @@ cc_library(
         "@nlohmann_json//:json",
         "@tensorrt",
     ],
+)
+
+cc_library(
+    name = "edgellm_plugins_static",
+    srcs = [":plugin_cpp_srcs"],
+    hdrs = glob(["plugins/**/*.h"]),
+    copts = _COMMON_COPTS,
+    defines = _FMHA_EXCLUDE_DEFINES,
+    includes = _COMMON_INCLUDE_DIRS,
+    deps = [
+        ":edgellm_kernels",
+        "@tensorrt",
+    ],
+    alwayslink = True,
 )
 
 cc_binary(

@@ -233,6 +233,7 @@ def _is_qwen3_asr_model(model_dir: str) -> bool:
 INCOMPATIBLE_CHAT_TEMPLATE_MODELS = [
     "phi4mm",  # Phi-4-multimodal: tokenizer lacks proper chat template
     "Qwen3-TTS",  # Qwen3-TTS: Special model that does not come with chat template
+    "qwen3_5",  # Qwen3.5: complex Jinja template causes apply_chat_template to hang
 ]
 
 
@@ -551,12 +552,20 @@ def load_llm_model(
                                                reduced_vocab_size, vocab_map)
 
     else:
-        # Standard LLM / EAGLE
+        # Standard LLM / EAGLE / Qwen3.5
         hf_model = model
 
         is_hybrid = hasattr(hf_model.config, 'layers_block_type')
+        is_qwen3_5 = (hasattr(hf_model.config, 'layer_types')
+                      and 'linear_attention' in hf_model.config.layer_types)
 
-        if is_hybrid and not trt_native_ops:
+        if is_qwen3_5 and not trt_native_ops:
+            print("Detected Qwen3.5 (GatedDeltaNet+Attention) architecture")
+            from .models.llm_model import EdgeLLMQwen3_5ModelForCausalLM
+            edge_model = EdgeLLMQwen3_5ModelForCausalLM(hf_model,
+                                                        reduced_vocab_size,
+                                                        vocab_map)
+        elif is_hybrid and not trt_native_ops:
             print("Detected hybrid (Mamba+Attention) architecture")
             edge_model = EdgeLLMHybridModelForCausalLM(hf_model,
                                                        reduced_vocab_size,
@@ -713,6 +722,10 @@ def prepare_language_model_and_config(hf_model: nn.Module):
     # Use language_model if available, otherwise use model.model.
     if hasattr(hf_model, 'language_model'):
         language_model = hf_model.language_model
+        config = hf_model.config.text_config
+    elif hasattr(hf_model, 'model') and hasattr(hf_model.model, 'language_model'):
+        # Qwen3.5: model is Qwen3_5Model, which wraps language_model (Qwen3_5TextModel)
+        language_model = hf_model.model.language_model
         config = hf_model.config.text_config
     elif getattr(hf_model.config, 'model_type', '') == 'qwen3_omni_thinker':
         language_model = hf_model.model

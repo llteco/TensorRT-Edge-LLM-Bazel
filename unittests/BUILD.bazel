@@ -1,7 +1,8 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
@@ -14,6 +15,11 @@ filegroup(
 filegroup(
     name = "unittests_cu_srcs",
     srcs = glob(["**/*.cu"]),
+)
+
+filegroup(
+    name = "unittests_resources",
+    srcs = glob(["resources/*.safetensors"]),
 )
 
 _COMMON_INCLUDE_DIRS = [

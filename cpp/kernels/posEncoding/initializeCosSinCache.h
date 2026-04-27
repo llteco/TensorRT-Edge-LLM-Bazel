@@ -74,7 +74,8 @@ void initializeLongRopeCosSin(float* shortCosSinCache, float* longCosSinCache, f
  * @param stream CUDA stream
  */
 void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
-    int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, cudaStream_t stream);
+    int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, cudaStream_t stream,
+    int32_t const* mropeSection = nullptr);
 
 /*!
  * @brief Initialize MRoPE cos/sin cache for text-only inputs with sequential positions.

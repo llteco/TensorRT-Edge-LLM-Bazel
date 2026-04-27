@@ -2,7 +2,6 @@ workspace(name = "tensorrt_edge_llm")
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
 
 rules_cc_version = "0.0.14"  # this is the last working version for legacy workspace
 
@@ -42,20 +41,34 @@ config_tensorrt(
     required = False,
 )
 
-new_local_repository(
+local_repository(
     name = "nlohmann_json",
-    build_file_content = """
-cc_library(
-    name = "json",
-    hdrs = glob(["single_include/**/*.hpp"]),
-    includes = ["single_include"],
-    visibility = ["//visibility:public"],
-)
-""",
     path = "3rdParty/nlohmannJson",
 )
 
 local_repository(
     name = "com_google_googletest",
     path = "3rdParty/googletest",
+)
+
+# https://github.com/bazelbuild/bazel-skylib/releases
+skylib_version = "1.9.0"
+
+http_archive(
+    name = "bazel_skylib",
+    sha256 = "3b5b49006181f5f8ff626ef8ddceaa95e9bb8ad294f7b5d7b11ea9f7ddaf8c59",
+    urls = [
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/{0}/bazel-skylib-{0}.tar.gz".format(skylib_version),
+    ],
+)
+
+# Hedron's Compile Commands Extractor for Bazel (fork'd version)
+# https://github.com/loseall/bazel-compile-commands-extractor
+hedron_commit = "2c33c1b2a6a06ef9d4a371ba90b7325341a15f39"
+
+http_archive(
+    name = "hedron_compile_commands",
+    integrity = "sha256-u0AvEvL4uf4pUBZ+LQTekwn+hflpJi/3ZKTOA1K8U6U=",
+    strip_prefix = "bazel-compile-commands-extractor-%s" % hedron_commit,
+    url = "https://github.com/loseall/bazel-compile-commands-extractor/archive/%s.zip" % hedron_commit,
 )
